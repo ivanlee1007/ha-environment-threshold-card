@@ -484,8 +484,10 @@ test('all six summary states stay in one line with many items and sections', asy
     expect(Math.max(...items.map(item => item.height))).toBeLessThan(22);
   }
   await expectSummaryFit(() => measureSummary(summary, 240), 'six counts after shrinking to 240px');
-  await summary.evaluate(el => { el.style.letterSpacing = '.75px'; });
-  await expectSummaryFit(() => summary.evaluate(summaryGeometry), 'six counts with wider glyphs at 240px');
+  for (const spacing of ['.75px', '1.5px']) {
+    await summary.evaluate((el, value) => { el.style.letterSpacing = value; }, spacing);
+    await expectSummaryFit(() => summary.evaluate(summaryGeometry), `six counts with ${spacing} wider glyphs at 240px`);
+  }
   for (const badge of await summary.getByRole('img').all()) {
     await expect(badge.locator('span:last-child')).toBeVisible();
     await expect(badge.locator('span:last-child')).toHaveText('20');

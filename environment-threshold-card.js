@@ -299,6 +299,8 @@ const DENSE_CSS = `
   .dense-mark { min-inline-size:10px; }
 }
 .dense-summary[data-fit=tight] { gap:1px; font-size:10px; }
+/* Keep all counts in the final compact row even when a theme widens tracking. */
+.dense-summary[data-fit=tight] > span { letter-spacing:normal; }
 .dense-summary[data-fit=tight] > :is([data-tone=high],[data-tone=low],[data-tone=issue],[data-tone=unavailable]) { padding-inline:1px; }
 `;
 
