@@ -1,12 +1,20 @@
 # 環境門檻監測卡
 
-Home Assistant Lovelace 自訂卡片：從現有的 `sensor.*` 實體讀取數值，不會觸發服務、不輪詢、不修改捲揚自動化。開發版，尚未在實機 HA 安裝驗證，未發佈 HACS 版本。
+Home Assistant Lovelace 自訂卡片：從現有的 `sensor.*` 實體讀取數值，不會觸發服務、不輪詢、不修改捲揚自動化。
 
-## 安裝開發版（測試用）
+![卡片預覽：六項環境感測，示範過高、過低與無讀值](docs/marketplace-preview.png)
 
-1. 複製 `environment-threshold-card.js` 到 HA 的 `<config>/www/`。
-2. 在「設定 → 儀表板 → 資源」加入 `/local/environment-threshold-card.js`，類型為 JavaScript 模組。
-3. 編輯儀表板，新增「環境門檻監測」卡片。依需求新增項目，從實體建議選擇或輸入 `sensor.*` ID，再選感測類型、名稱和上下限。按「套用項目」更新卡片預覽，最後由 HA 儲存儀表板。
+## 透過 Home Assistant Marketplace 安裝（2026.11 起）
+
+[![在 Home Assistant Marketplace 開啟](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=ivanlee1007&repository=ha-environment-threshold-card&category=plugin)
+
+1. 以管理員身分開啟上方連結；也可進入 HA **設定 → Marketplace → 從連結新增**，輸入 `ivanlee1007/ha-environment-threshold-card`。新增自訂儲存庫需要連結 GitHub 帳號；若系統詢問類型，選 **Dashboard**。
+2. 在 Marketplace 選擇 **安裝**，確認版本並依畫面提示完成，再重新整理瀏覽器。若以 YAML 管理儀表板資源，請依安裝視窗提示新增資源。
+3. 編輯儀表板，新增「環境門檻監測」卡片。依需求新增項目，選感測器、類型、名稱和門檻。按「套用項目」更新卡片預覽，最後由 HA 儲存儀表板。
+
+如尚未列在 Marketplace 預設目錄，請由連結新增，無須手動複製 JavaScript。手動安裝時，才需把 Release 的 `environment-threshold-card.js` 複製到 HA 的 `<config>/www/`，並將 `/local/environment-threshold-card.js` 註冊為 JavaScript 模組。
+
+## 卡片 YAML 範例
 
 也可在手動卡片設定加入：
 
