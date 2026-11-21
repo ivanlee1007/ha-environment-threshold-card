@@ -78,6 +78,9 @@ const numericState = raw => typeof raw === 'string' && DECIMAL.test(raw.trim()) 
 const withUnit = (value, unit) => `${format.format(value)}${unit ? ` ${unit}` : ''}`;
 const compactUnit = unit => unit === '%' ? '%' : unit ? ` ${unit}` : '';
 const customTitle = title => typeof title === 'string' && title.trim() ? title : '';
+const sectionTitle = section => customTitle(section.title).trim() || '未命名段落';
+const sectionId = value => typeof value === 'string' && value.trim() !== '';
+const denseMode = config => config?.display_mode === 'dense';
 
 // Lovelace can replay a fresh config object. Only a change to the item data
 // invalidates its positional draft; title and other card options do not.
@@ -98,10 +101,21 @@ function describeBounds(below, above, unit, flag) {
 }
 
 function validate(config) {
+  if (config?.display_mode !== undefined && !['standard', 'dense'].includes(config.display_mode)) throw new Error('無效的卡片顯示模式。');
+  if (config?.sections !== undefined) {
+    if (!Array.isArray(config.sections)) throw new Error('sections 必須是清單。');
+    const ids = new Set();
+    for (const section of config.sections) {
+      if (!sectionId(section?.id) || ids.has(section.id)) throw new Error('段落 ID 必須是唯一且非空白的文字。');
+      if (section.title !== undefined && typeof section.title !== 'string') throw new Error('段落標題必須是文字。');
+      ids.add(section.id);
+    }
+  }
   const items = config?.items ?? [];
   if (!Array.isArray(items)) throw new Error('items 必須是清單。');
   for (const item of items) {
     if (typeof item?.entity !== 'string' || !ENTITY_ID.test(item.entity)) throw new Error('請選擇有效的 sensor 實體。');
+    if (item.section !== undefined && !sectionId(item.section)) throw new Error('section 必須是非空白文字。');
     if (item.kind != null && !KINDS.has(item.kind)) throw new Error('無效的感測類型。');
     for (const key of ['name', 'unit']) if (item[key] != null && typeof item[key] !== 'string') throw new Error(`${key} 必須是文字。`);
     for (const key of ['below', 'above']) {
@@ -207,6 +221,323 @@ function tileNodes() {
   return { tile, path, name, value, unitNode, status, bounds };
 }
 
+const DENSE_CSS = `
+.dense-shell[hidden], .dense-shell [hidden] { display:none !important; }
+.dense-shell { container-type:inline-size; }
+.dense-card { --bg:#f8fafb; --tile:#fff; --edge:#cfdbe0; --ink:#162630; --dim:#435e69; padding:10px;
+  border-color:var(--ha-card-border-color,var(--edge)); background:var(--ha-card-background,var(--card-background-color,var(--bg)));
+  color:var(--primary-text-color,var(--ink)); line-height:1.4; }
+.dense-card[data-theme=dark] { --bg:#131c22; --tile:#1c2932; --edge:#364751; --ink:#f2f8fa; --dim:#b4c7cf; }
+@media (prefers-color-scheme:dark) {
+  .dense-card:not([data-theme]) { --bg:#131c22; --tile:#1c2932; --edge:#364751; --ink:#f2f8fa; --dim:#b4c7cf; }
+}
+.dense-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.dense-head h2 { margin:0; font-size:16px; letter-spacing:.02em; min-inline-size:0; }
+.dense-filter { flex:none; font:inherit; font-size:11px; line-height:1.4; min-height:26px; padding:2px 6px;
+  border:1px solid var(--divider-color,var(--edge)); border-radius:6px; color:inherit; background:var(--tile); cursor:pointer; }
+.dense-filter[aria-pressed=true] { color:#0c5a55; border-color:#4a9e90; background:#ddf4ee; }
+.dense-summary { display:flex; align-items:center; gap:5px; box-sizing:border-box; min-height:28px; margin:3px 0 0;
+  padding:5px 0; border-block-end:1px solid var(--divider-color,var(--edge)); font-size:11px; white-space:nowrap; }
+.dense-summary > span { color:var(--secondary-text-color,var(--dim)); }
+.dense-summary > :is([data-tone=high],[data-tone=low],[data-tone=issue],[data-tone=unavailable]) {
+  color:var(--alert-ink); background:var(--fill); border-radius:4px; padding:1px 4px; font-weight:750;
+}
+.dense-shell [data-tone=high] { --fill:#ffe6e1; --alert-ink:#9e281b; --alert-edge:#ed8d83; }
+.dense-shell [data-tone=low] { --fill:#e5f0ff; --alert-ink:#174f95; --alert-edge:#77a9e8; }
+.dense-shell :is([data-tone=issue],[data-tone=unavailable]) { --fill:#d9e3ea; --alert-ink:#33444e; --alert-edge:#78909c; }
+.dense-short { display:none; }
+.dense-section + .dense-section { margin-block-start:7px; }
+.dense-section h3 { display:flex; align-items:center; gap:9px; font-size:12px; margin:6px 0 3px; font-weight:650; }
+.dense-section-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dense-count { flex:none; color:var(--secondary-text-color,var(--dim)); font-size:11px; font-weight:400; white-space:nowrap; }
+.dense-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,64px),1fr)); gap:4px; }
+/* Long readings get intrinsic space up to the grid width; only the unit can wrap. */
+.dense-grid[data-wide] { display:flex; flex-wrap:wrap; }
+.dense-grid[data-wide] .dense-tile { flex:1 0 64px; }
+.dense-grid[data-wide] .dense-tile[data-wide] { flex-basis:max-content; }
+.dense-tile { box-sizing:border-box; min-width:0; max-width:100%; min-height:41px; padding:3px 2px; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; border-radius:6px; border:1px solid var(--alert-edge,var(--divider-color,var(--edge)));
+  color:var(--alert-ink,var(--primary-text-color,var(--ink))); background:var(--fill,var(--tile)); font:inherit; cursor:pointer; }
+.dense-tile:is([data-tone=issue],[data-tone=unavailable]) { border-style:dashed; }
+.dense-tile[aria-expanded=true] { box-shadow:inset 0 0 0 1px var(--alert-ink,var(--dim)); }
+.dense-tile:focus-visible, .dense-filter:focus-visible { outline:2px solid var(--primary-color,#179785); outline-offset:1px; z-index:1; }
+.dense-label { display:inline-flex; align-items:center; gap:3px; max-width:100%; line-height:1.25; font-size:11px;
+  color:var(--alert-ink,var(--secondary-text-color,var(--dim))); }
+.dense-label svg { width:13px; height:13px; flex:none; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.dense-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dense-reading,.dense-number { display:inline-flex; align-items:center; white-space:nowrap; gap:2px; }
+.dense-reading { max-width:100%; font-size:11px; font-weight:660; font-variant-numeric:tabular-nums; }
+.dense-number { min-width:0; align-items:baseline; }
+.dense-number > span { flex:none; }
+.dense-number small { white-space:normal; overflow-wrap:anywhere; text-align:start;
+  font-size:9px; font-weight:500; color:var(--alert-ink,var(--secondary-text-color,var(--dim))); }
+.dense-mark { display:inline-grid; place-items:center; flex:none; min-inline-size:12px; block-size:14px; border-radius:3px;
+  font-size:11px; font-weight:750; line-height:1; background:var(--alert-ink,transparent); color:var(--fill,var(--secondary-text-color,var(--dim))); }
+.dense-detail { margin-block-start:6px; padding:6px 8px; border-radius:7px; border:1px solid var(--divider-color,var(--edge));
+  font-size:12px; overflow-wrap:anywhere; }
+.dense-detail strong { margin-inline-end:6px; }
+.dense-detail span,.dense-empty { color:var(--secondary-text-color,var(--dim)); }
+.dense-empty { font-size:12px; margin:6px 0 0; }
+@container (max-width:440px) {
+  .dense-summary[data-compact] .dense-word, .dense-summary[data-compact] .dense-short { display:none; }
+}
+@container (max-width:360px) {
+  .dense-summary { gap:4px; font-size:10px; }
+  .dense-word { display:none; }
+  .dense-short { display:inline; }
+}
+@container (max-width:275px) {
+  .dense-card { padding:7px; }
+  .dense-summary { gap:2px; }
+  .dense-summary > :is([data-tone=high],[data-tone=low],[data-tone=issue],[data-tone=unavailable]) { padding-inline:3px; }
+  .dense-short { display:none; }
+  .dense-number { gap:1px; }
+  .dense-mark { min-inline-size:10px; }
+}
+`;
+
+const DENSE_LEGEND = [
+  ['high', '↑', '過高', '過高'], ['low', '↓', '過低', '過低'], ['unavailable', '!', '無讀值', '無值'],
+  ['issue', '⚠', '門檻異常', '門檻'], ['normal', '✓', '正常', '正常'], ['unset', '–', '未設門檻', '未設'],
+];
+const denseSymbols = new Map(DENSE_LEGEND.map(([key, mark]) => [key, mark]));
+const denseTone = flag => denseSymbols.has(flag) ? flag : 'issue';
+const denseProblem = tone => tone !== 'normal' && tone !== 'unset';
+const scientific = new Intl.NumberFormat(undefined, { notation: 'scientific', maximumSignificantDigits: 15 });
+// Don't fall back to IDs, or echo sensor/threshold IDs supplied as display metadata.
+const publicLabel = (label, fallback = '') => typeof label === 'string'
+  ? label.replace(/\b(?:sensor|number|input_number|counter)\.[a-z_0-9]+\b/gi, '').trim() || fallback : fallback;
+const setAttr = (node, key, value) => { if (node.getAttribute(key) !== value) node.setAttribute(key, value); };
+const hide = (node, value) => { if (node.hidden !== value) node.hidden = value; };
+// Only validated display/threshold fields participate; live readings are not identity.
+const denseItemKey = ({ entity, section, kind, name, unit, below, above }) =>
+  JSON.stringify([entity, section, kind, name, unit, below, above]);
+
+// Reorder only changed children. Equivalent HA echoes never detach a focused tile.
+function reconcileChildren(parent, nodes) {
+  const wanted = new Set(nodes);
+  for (const node of [...parent.childNodes]) if (!wanted.has(node)) node.remove();
+  let current = parent.firstChild;
+  for (const node of nodes) {
+    if (current === node) current = current.nextSibling;
+    else parent.insertBefore(node, current);
+  }
+}
+
+class DenseDisplay {
+  constructor(root) {
+    this.root = root;
+    this.sections = new Map();
+    this.rows = [];
+    this.filter = dom('button', 'dense-filter', '只看異常');
+    this.filter.type = 'button';
+    this.filter.setAttribute('aria-pressed', 'false');
+    this.filter.onclick = () => {
+      this.onlyIssues = !this.onlyIssues;
+      this.filter.setAttribute('aria-pressed', String(this.onlyIssues));
+      this.updateVisibility();
+    };
+    this.shell = dom('div', 'dense-shell');
+    this.panel = dom('ha-card', 'dense-card');
+    this.title = dom('h2');
+    const head = dom('div', 'dense-head');
+    head.append(this.title, this.filter);
+    this.summary = dom('div', 'dense-summary');
+    this.summary.setAttribute('role', 'status');
+    this.badges = DENSE_LEGEND.map(([tone, mark, label, short]) => {
+      const el = dom('span', '', mark);
+      el.dataset.tone = tone;
+      el.setAttribute('role', 'img');
+      const count = dom('span');
+      el.append(dom('span', 'dense-word', ` ${label}`), dom('span', 'dense-short', ` ${short}`), count);
+      return { el, tone, label, count };
+    });
+    this.total = dom('span');
+    this.summary.append(...this.badges.map(b => b.el), this.total);
+    this.content = dom('div');
+    this.empty = dom('p', 'dense-empty');
+    this.detail = dom('div', 'dense-detail');
+    this.detail.id = 'dense-detail';
+    this.detail.setAttribute('aria-live', 'polite');
+    this.detailTitle = dom('strong');
+    this.detailBody = dom('span');
+    this.detail.append(this.detailTitle, this.detailBody);
+    this.panel.append(head, this.summary, this.content, this.empty, this.detail);
+    this.shell.append(this.panel);
+    root.append(style(DENSE_CSS), this.shell);
+  }
+
+  createRow() {
+    const tile = dom('button', 'dense-tile');
+    tile.type = 'button';
+    tile.setAttribute('aria-controls', this.detail.id);
+    const label = dom('span', 'dense-label');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS(svg.namespaceURI, 'path');
+    svg.append(path);
+    const name = dom('span', 'dense-name');
+    label.append(svg, name);
+    const reading = dom('span', 'dense-reading');
+    const mark = dom('span', 'dense-mark');
+    mark.setAttribute('aria-hidden', 'true');
+    const numeric = dom('span', 'dense-number');
+    const value = dom('span');
+    const unit = dom('small');
+    numeric.append(value, unit);
+    reading.append(mark, numeric);
+    tile.append(label, reading);
+    const row = { tile, path, name, reading, mark, value, unit };
+    tile.onclick = () => {
+      if (!tile.hidden && tile.isConnected && !this.shell.hidden) this.showDetail(this.open === row ? undefined : row);
+    };
+    return row;
+  }
+
+  createSection() {
+    const node = dom('section', 'dense-section');
+    const heading = dom('h3');
+    const title = dom('span', 'dense-section-title');
+    const count = dom('span', 'dense-count');
+    heading.append(title, count);
+    const grid = dom('div', 'dense-grid');
+    const empty = dom('p', 'dense-empty');
+    node.append(heading, grid, empty);
+    return { node, title, count, grid, empty, rows: [] };
+  }
+
+  matchRows(items) {
+    // An unchanged ordered list preserves positions, even for identical duplicates.
+    if (sameConfigData(items, this.rows.map(row => row.item))) return this.rows;
+
+    // For a changed list, a match must be unique on both sides.
+    const previous = new Map();
+    for (const row of this.rows) previous.set(row.key, previous.has(row.key) ? null : row);
+    const keys = items.map(denseItemKey);
+    const counts = new Map();
+    for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+    return keys.map(key => {
+      const row = (counts.get(key) === 1 ? previous.get(key) : null) ?? this.createRow();
+      row.key = key;
+      return row;
+    });
+  }
+
+  updateConfig(config, items, states, dark) {
+    const active = this.root.activeElement;
+    text(this.title, publicLabel(config.title, DEFAULT_TITLE));
+    const sections = new Map();
+    for (const section of config.sections ?? []) {
+      const view = this.sections.get(section.id) ?? this.createSection();
+      text(view.title, publicLabel(sectionTitle(section), '未命名段落'));
+      view.rows = [];
+      sections.set(section.id, view);
+    }
+    this.rows = this.matchRows(items);
+    this.rows.forEach((row, index) => {
+      const item = items[index];
+      let section = sections.get(item.section);
+      if (!section) {
+        section = sections.get(null);
+        if (!section) {
+          section = this.sections.get(null) ?? this.createSection();
+          text(section.title, '未分組');
+          section.rows = [];
+          sections.set(null, section);
+        }
+      }
+      row.item = { ...item };
+      row.section = section;
+      section.rows.push(row);
+    });
+    if (!this.rows.includes(this.open)) this.open = undefined;
+    this.sections = sections;
+    reconcileChildren(this.content, [...sections.values()].map(section => section.node));
+    for (const section of sections.values()) reconcileChildren(section.grid, section.rows.map(row => row.tile));
+    this.update(states, dark);
+    if (active?.classList.contains('dense-tile') && this.root.activeElement !== active) {
+      const target = active.isConnected && !active.closest('[hidden]') ? active : this.filter;
+      target.focus({ preventScroll: true });
+    }
+  }
+
+  update(states, dark) {
+    if (typeof dark === 'boolean') setAttr(this.panel, 'data-theme', dark ? 'dark' : 'light');
+    else if (this.panel.hasAttribute('data-theme')) this.panel.removeAttribute('data-theme');
+    const counts = new Map();
+    for (const row of this.rows) {
+      const { item, tile, path, name, mark, value, unit } = row;
+      const state = states?.[item.entity];
+      const [flag, formatted, rawUnit, bounds] = evaluate(item, states);
+      const tone = denseTone(flag);
+      const unitText = publicLabel(rawUnit);
+      const numeric = formatted.length > 23 ? scientific.format(numericState(state?.state)) : formatted;
+      const label = publicLabel(item.name) || publicLabel(state?.attributes?.friendly_name, '感測器');
+      row.flag = flag;
+      row.tone = tone;
+      row.bounds = publicLabel(bounds);
+      counts.set(tone, (counts.get(tone) ?? 0) + 1);
+      setAttr(tile, 'data-tone', tone);
+      setAttr(tile, 'data-state', flag);
+      setAttr(path, 'd', KINDS.get(item.kind ?? DEVICE_KINDS.get(deviceClassOf(state)) ?? 'custom')[1]);
+      text(name, label);
+      text(mark, denseSymbols.get(tone));
+      text(value, numeric);
+      text(unit, unitText);
+      hide(unit, !unitText);
+      setAttr(tile, 'aria-label', `${row.section.title.textContent}・${label}，${numeric}${unitText ? ` ${unitText}` : ''}，${STATUS[flag]}`);
+    }
+    this.summary.toggleAttribute('data-compact', counts.size === this.badges.length || this.rows.length > 99);
+    for (const { el, tone, label, count } of this.badges) {
+      const n = counts.get(tone) ?? 0;
+      hide(el, !n);
+      setAttr(el, 'aria-label', `${label} ${n}`);
+      setAttr(el, 'title', `${label} ${n}`);
+      text(count, ` ${n}`);
+    }
+    text(this.total, `共 ${this.rows.length} 項`);
+    this.updateVisibility();
+  }
+
+  updateVisibility() {
+    const active = this.root.activeElement;
+    let any = false;
+    const layouts = [];
+    for (const { node, rows, grid, count, empty } of this.sections.values()) {
+      const shown = this.onlyIssues ? rows.filter(row => denseProblem(row.tone)) : rows;
+      const visible = new Set(shown);
+      hide(node, Boolean(this.onlyIssues && !shown.length));
+      hide(grid, !shown.length);
+      hide(empty, Boolean(shown.length));
+      text(empty, shown.length ? '' : '尚未加入監測項目');
+      text(count, `${shown.length}${this.onlyIssues ? ` / ${rows.length}` : ''} 項`);
+      for (const row of rows) hide(row.tile, !visible.has(row));
+      layouts.push({ grid, shown });
+      any ||= !node.hidden;
+    }
+    // Read all intrinsic widths before applying grid changes; no observer, timer or resize loop.
+    const widths = layouts.map(({ shown }) => shown.map(row => row.reading.getBoundingClientRect().width > 55));
+    layouts.forEach(({ grid, shown }, index) => {
+      shown.forEach((row, i) => row.tile.toggleAttribute('data-wide', widths[index][i]));
+      grid.toggleAttribute('data-wide', widths[index].some(Boolean));
+    });
+    hide(this.empty, any);
+    text(this.empty, this.onlyIssues ? '目前沒有異常' : '尚未新增段落');
+    this.showDetail(this.open?.tile.hidden ? undefined : this.open);
+    if (active?.classList.contains('dense-tile') && active.hidden) this.filter.focus({ preventScroll: true });
+  }
+
+  showDetail(row) {
+    this.open = row;
+    for (const { tile } of this.rows) setAttr(tile, 'aria-expanded', String(tile === row?.tile));
+    hide(this.detail, !row);
+    text(this.detailTitle, row ? `${row.section.title.textContent}・${row.name.textContent}｜${STATUS[row.flag]}` : '');
+    text(this.detailBody, row ? row.bounds || '未設定上下限' : '');
+  }
+}
+
 class EnvironmentThresholdCard extends HTMLElement {
   static getStubConfig() { return { items: [] }; }
   static getConfigElement() { return dom(`${TAG}-editor`); }
@@ -214,6 +545,7 @@ class EnvironmentThresholdCard extends HTMLElement {
   constructor() {
     super();
     const panel = dom('ha-card');
+    this.panel = panel;
     this.titleNode = dom('h2');
     this.summary = dom('p', 'summary');
     this.summary.setAttribute('role', 'status');
@@ -222,21 +554,43 @@ class EnvironmentThresholdCard extends HTMLElement {
     this.attachShadow({ mode: 'open' }).append(style(CARD_CSS), panel);
   }
 
+  connectedCallback() {
+    if (this.dense && !this.dense.shell.hidden) this.dense.update(this.states, this.darkMode);
+  }
+
   setConfig(config) {
     const items = validate(config);
-    this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
-    this.grid.replaceChildren(...this.rows.map(row => row.tile));
+    if (denseMode(config)) {
+      if (!this.dense) this.dense = new DenseDisplay(this.shadowRoot);
+      // Legacy labels can contain entity IDs; keep their panel out of the dense DOM.
+      this.panel.remove();
+      this.dense.shell.hidden = false;
+      this.dense.updateConfig(config, items, this.states, this.darkMode);
+      return;
+    }
+    if (this.dense) this.dense.shell.hidden = true;
+    if (!this.panel.parentNode) this.shadowRoot.append(this.panel);
+    if (!sameConfigData(items, this.rows?.map(row => row.item))) {
+      this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
+      this.grid.replaceChildren(...this.rows.map(row => row.tile));
+    }
     text(this.titleNode, customTitle(config?.title) || DEFAULT_TITLE);
     this.updateStates();
   }
 
   set hass(hass) {
     this.states = hass?.states;
-    this.updateStates();
+    this.darkMode = hass?.themes?.darkMode;
+    if (this.dense && !this.dense.shell.hidden) this.dense.update(this.states, this.darkMode);
+    else this.updateStates();
   }
 
   getGridOptions() { return { columns: 12, min_columns: 3 }; }
-  getCardSize() { return 1 + Math.max(1, Math.ceil((this.rows?.length ?? 0) / 2)) * 2; }
+  getCardSize() {
+    if (this.dense && !this.dense.shell.hidden) return 1 + [...this.dense.sections.values()]
+      .reduce((height, section) => height + Math.max(1, Math.ceil(section.rows.length / 4)), 0);
+    return 1 + Math.max(1, Math.ceil((this.rows?.length ?? 0) / 2)) * 2;
+  }
 
   updateStates() {
     if (!this.rows) return;
@@ -293,6 +647,11 @@ button,input,select { box-sizing:border-box; min-height:44px; font:inherit; colo
 input,select { width:100%; min-width:0; }
 button { cursor:pointer; max-width:100%; overflow-wrap:anywhere; }
 button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid var(--primary-color,#1976d2); outline-offset:2px; }
+.dense-option { display:flex; align-items:center; gap:7px; min-height:44px; }
+.dense-option input { width:auto; min-height:0; }
+.section-edit { margin-block-start:8px; }
+.section-edit-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:6px; margin-block-end:6px; }
+@container (max-width:275px) { .section-edit-row { grid-template-columns:minmax(0,1fr); } }
 .primary { background:var(--primary-color,#17668a); color:var(--text-primary-color,#fff); }
 [role=alert] { border-inline-start:3px solid var(--error-color,#bf3428); padding-inline-start:7px; }
 `;
@@ -312,7 +671,20 @@ class EnvironmentThresholdEditor extends HTMLElement {
       this.emitConfig();
     });
     const appearance = dom('section', 'appearance');
-    appearance.append(dom('h3', '', '卡片外觀'), this.field('卡片標題', this.titleInput));
+    this.density = dom('input');
+    this.density.type = 'checkbox';
+    this.density.addEventListener('change', () => {
+      if (!this.config) return;
+      const config = { ...this.config, type: `custom:${TAG}` };
+      if (this.density.checked) config.display_mode = 'dense';
+      else delete config.display_mode;
+      this.config = config;
+      this.syncSections();
+      this.emitConfig();
+    });
+    this.sectionControls = this.createSectionControls();
+    appearance.append(dom('h3', '', '卡片外觀'), this.field('卡片標題', this.titleInput),
+      this.field('密集模式', this.density, 'dense-option'), this.sectionControls);
     const monitoring = dom('section', 'monitoring');
     this.list = dom('div', 'list');
     this.form = dom('form');
@@ -333,6 +705,93 @@ class EnvironmentThresholdEditor extends HTMLElement {
     const itemsChanged = !sameConfigData(next.items, this.config?.items);
     this.config = next;
     if (itemsChanged) this.closeItem();
+    this.syncSections();
+  }
+
+  createSectionControls() {
+    const controls = dom('div', 'section-edit');
+    this.sectionSelect = dom('select');
+    this.sectionSelect.setAttribute('aria-label', '選擇段落');
+    this.sectionSelect.addEventListener('change', () => {
+      this.selectedSection = this.sectionSelect.value;
+      this.syncSections();
+    });
+    this.addSectionButton = this.button('新增段落', () => {
+      if (!denseMode(this.config)) return;
+      const sections = this.config.sections ?? [];
+      const used = new Set([...sections.map(section => section.id), ...this.config.items.map(item => item.section)]);
+      let n = 1;
+      while (used.has(`section-${n}`)) n++;
+      this.selectedSection = `section-${n}`;
+      this.commitSections([...sections, { id: this.selectedSection, title: '新段落' }]);
+      this.sectionTitleInput.focus();
+      this.sectionTitleInput.select();
+    });
+    this.sectionTitleInput = dom('input');
+    this.sectionTitleInput.placeholder = '未命名段落';
+    this.sectionTitleInput.addEventListener('input', () => {
+      if (!denseMode(this.config)) return;
+      const sections = this.config.sections ?? [];
+      const selected = sections.find(section => section.id === this.selectedSection);
+      if (!selected || this.sectionTitleInput.value === selected.title) return;
+      this.commitSections(sections.map(section => section === selected ? { ...section, title: this.sectionTitleInput.value } : section));
+    });
+    const remove = this.button('移除段落', () => {
+      if (!denseMode(this.config)) return;
+      const sections = this.config.sections ?? [];
+      const index = sections.findIndex(section => section.id === this.selectedSection);
+      if (index < 0) return;
+      const removed = sections[index].id;
+      const next = sections.filter(section => section.id !== removed);
+      this.selectedSection = next[Math.min(index, next.length - 1)]?.id;
+      const items = this.config.items.map(item => {
+        if (item.section !== removed) return item;
+        const { section, ...unassigned } = item;
+        return unassigned;
+      });
+      this.commitSections(next, items);
+      (next.length ? this.sectionSelect : this.addSectionButton).focus();
+    });
+    const tools = dom('div', 'section-edit-row');
+    const fields = dom('div', 'section-edit-row');
+    tools.append(this.field('選擇段落', this.sectionSelect), this.addSectionButton);
+    fields.append(this.field('段落標題', this.sectionTitleInput), remove);
+    this.sectionFields = fields;
+    controls.append(tools, fields, dom('p', 'unit-note', '移除段落會將其中的監測項目移到「未分組」，不會刪除項目或門檻。可在各監測項目設定所屬段落。'));
+    controls.hidden = true;
+    return controls;
+  }
+
+  syncSections() {
+    const sections = this.config.sections ?? [];
+    const dense = denseMode(this.config);
+    this.density.checked = dense;
+    hide(this.sectionControls, !dense);
+    const selected = sections.find(section => section.id === this.selectedSection) ?? sections[0];
+    this.selectedSection = selected?.id;
+    this.setSectionOptions(this.sectionSelect, sections, this.selectedSection);
+    this.sectionSelect.disabled = !selected;
+    hide(this.sectionFields, !selected);
+    if (this.sectionTitleInput.value !== (selected?.title ?? '')) this.sectionTitleInput.value = selected?.title ?? '';
+    this.updateAssignment?.(sections, dense);
+  }
+
+  setSectionOptions(select, sections, value, unassigned = false) {
+    const options = new Map([...select.options].map(option => [option.value, option]));
+    const entries = sections.map(section => [section.id, sectionTitle(section)]);
+    if (unassigned) entries.unshift(['', '未分組']);
+    reconcileChildren(select, entries.map(([id, label]) => {
+      const option = options.get(id) ?? new Option('', id);
+      text(option, label);
+      return option;
+    }));
+    if (select.value !== (value ?? '')) select.value = value ?? '';
+  }
+
+  commitSections(sections, items = this.config.items) {
+    this.config = { ...this.config, type: `custom:${TAG}`, sections, items };
+    this.syncSections();
+    this.emitConfig();
   }
 
   set hass(hass) {
@@ -448,6 +907,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
     }
     this.form.onsubmit = null;
     this.updateSourceDetails = undefined;
+    this.updateAssignment = undefined;
     this.addButton.hidden = false;
     this.list.replaceChildren(...this.config.items.map((item, index) => {
       const button = this.button(nameOf(item, this.states), () => this.openItem(index));
@@ -464,9 +924,27 @@ class EnvironmentThresholdEditor extends HTMLElement {
     const kind = dom('select');
     for (const [key, [label]] of KINDS) kind.append(new Option(label, key));
     const suggested = id => DEVICE_KINDS.get(this.states?.[id]?.attributes?.device_class) ?? 'custom';
-    kind.value = item?.kind ?? suggested(selectedEntity);
+    const initialKind = item?.kind ?? suggested(selectedEntity);
+    kind.value = initialKind;
     const label = dom('input');
     label.value = item?.name ?? '';
+    const assignment = dom('select');
+    assignment.setAttribute('aria-label', '所屬段落');
+    const assignmentField = this.field('所屬段落', assignment, 'full');
+    let draftedSection = item?.section;
+    let previousSections = new Set();
+    assignment.addEventListener('change', () => {
+      if (!assignmentField.hidden && this.fields.contains(assignment) &&
+          (!assignment.value || previousSections.has(assignment.value))) draftedSection = assignment.value || undefined;
+    });
+    this.updateAssignment = (sections, dense) => {
+      const available = new Set(sections.map(section => section.id));
+      if (previousSections.has(draftedSection) && !available.has(draftedSection)) draftedSection = undefined;
+      previousSections = available;
+      this.setSectionOptions(assignment, sections, available.has(draftedSection) ? draftedSection : undefined, true);
+      hide(assignmentField, !dense);
+    };
+    this.updateAssignment(this.config.sections ?? [], denseMode(this.config));
     const selector = this.thresholdSelector();
     const below = this.boundField('below', '下限', item?.below, selector);
     const above = this.boundField('above', '上限', item?.above, selector);
@@ -513,7 +991,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
     };
     this.updateSourceDetails();
     updateNote();
-    this.fields.replaceChildren(entity, this.field('顯示名稱（選填）', label), this.field('感測類型', kind));
+    this.fields.replaceChildren(entity, this.field('顯示名稱（選填）', label), this.field('感測類型', kind), assignmentField);
     const buttons = dom('div', 'actions');
     const apply = dom('button', 'primary', '套用項目');
     apply.type = 'submit';
@@ -529,6 +1007,17 @@ class EnvironmentThresholdEditor extends HTMLElement {
       if (label.value.trim()) updated.name = label.value.trim();
       const lower = below.value();
       const upper = above.value();
+      const items = this.config.items.slice();
+      const saved = items[focusIndex];
+      if (saved && saved.section !== draftedSection && selectedEntity === saved.entity && kind.value === initialKind &&
+          label.value.trim() === (saved.name ?? '').trim() && lower === (saved.below ?? undefined) && upper === (saved.above ?? undefined)) {
+        // Moving an existing item is not a threshold edit; retain the exact YAML and its unit binding.
+        const { section, ...unchanged } = saved;
+        items[focusIndex] = draftedSection === undefined ? unchanged : { ...unchanged, section: draftedSection };
+        this.commit(items, focusIndex);
+        return;
+      }
+      if (draftedSection !== undefined) updated.section = draftedSection;
       if (lower !== undefined) updated.below = lower;
       if (upper !== undefined) updated.above = upper;
       if (hasBounds(updated)) {
@@ -547,7 +1036,6 @@ class EnvironmentThresholdEditor extends HTMLElement {
           return;
         }
       }
-      const items = this.config.items.slice();
       items[focusIndex] = updated;
       try { validate({ items }); }
       catch (e) { showError(e.message); return; }
