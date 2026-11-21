@@ -4,6 +4,38 @@ import { fileURLToPath } from 'node:url';
 const asset = fileURLToPath(new URL('../environment-threshold-card.js', import.meta.url));
 const cardTag = 'environment-threshold-card';
 
+function summaryGeometry(el) {
+  const outer = el.getBoundingClientRect();
+  const center = (outer.top + outer.bottom - parseFloat(getComputedStyle(el).borderBottomWidth)) / 2;
+  const items = [...el.children].filter(node => !node.hidden).map(node => {
+    const { left, right, top, bottom, height } = node.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const text = [...range.getClientRects()];
+    return { tone: node.dataset.tone ?? 'total', left: left - outer.left, right: right - outer.left,
+      height, centerDelta: (top + bottom) / 2 - center,
+      intact: left >= outer.left - .01 && right <= outer.right + .01 &&
+        top >= outer.top - .01 && bottom <= outer.bottom + .01 && text.length > 0 &&
+        text.every(r => r.left >= left - .01 && r.right <= right + .01 &&
+          r.top >= outer.top - .01 && r.bottom <= outer.bottom + .01) };
+  });
+  return { width: outer.width, height: outer.height, items,
+    fits: items.every((item, i) => item.intact && Math.abs(item.centerDelta) < .05 &&
+      (!i || item.left >= items[i - 1].right - .01)) };
+}
+
+const measureSummary = async (summary, width) => {
+  await summary.evaluate((el, width) => {
+    el.getRootNode().host.parentElement.style.width = `${width}px`;
+  }, width);
+  return summary.evaluate(summaryGeometry);
+};
+
+const expectSummaryFit = (measure, message) => expect.poll(async () => {
+  const report = await measure();
+  return report.fits ? null : report;
+}, { message }).toBeNull();
+
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 1200, height: 900 });
   await page.setContent('<div id="host" style="width:300px;font:14px/1.4 system-ui,sans-serif"></div>');
@@ -55,6 +87,7 @@ for (const theme of ['light', 'dark']) {
     const sections = page.locator('.dense-section');
     await expect(sections.locator('h3')).toHaveText(['室外6 項', '室外6 項', '空白0 項', '未分組1 項'], { timeout: 1200 });
     const card = page.locator(cardTag);
+    const summary = card.locator('.dense-summary');
     const measure = width => card.evaluate((el, width) => {
       el.parentElement.style.width = `${width}px`;
       const root = el.shadowRoot;
@@ -75,16 +108,13 @@ for (const theme of ['light', 'dark']) {
           value.getBoundingClientRect().right <= unit.getBoundingClientRect().left &&
           contained(t, reading) && contained(t, unit);
       });
-      const summary = root.querySelector('.dense-summary');
-      const children = [...summary.children].filter(n => !n.hidden && n.getClientRects().length);
-      const summaryFits = children.every(n => contained(summary, n) &&
-        Math.abs(n.getBoundingClientRect().top - children[0].getBoundingClientRect().top) < 5);
       return { width: el.getBoundingClientRect().width, rows: Object.values(groups).map(r => r.length),
-        valid, summaryFits, colors: tiles.slice(0, 4).map(t => [getComputedStyle(t).backgroundColor, getComputedStyle(t).borderTopStyle]) };
+        valid, colors: tiles.slice(0, 4).map(t => [getComputedStyle(t).backgroundColor, getComputedStyle(t).borderTopStyle]) };
     }, width);
     for (const [width, rows] of [[240, [3, 3]], [300, [4, 2]], [520, [6]], [840, [6]], [300, [4, 2]]]) {
       const m = await measure(width);
-      expect(m, `card width ${width}`).toMatchObject({ width, rows, valid: true, summaryFits: true });
+      expect(m, `card width ${width}`).toMatchObject({ width, rows, valid: true });
+      await expectSummaryFit(() => summary.evaluate(summaryGeometry), `summary width ${width}`);
       expect(m.colors.slice(0, 3)).toEqual([['rgb(229, 240, 255)', 'solid'], ['rgb(255, 230, 225)', 'solid'], ['rgb(217, 227, 234)', 'dashed']]);
     }
     const initial = await measure(300);
@@ -95,7 +125,8 @@ for (const theme of ['light', 'dark']) {
       window.card.hass = window.ha;
     });
     for (const width of [240, 300, 520, 840]) {
-      expect(await measure(width)).toMatchObject({ width, valid: true, summaryFits: true });
+      expect(await measure(width)).toMatchObject({ width, valid: true });
+      await expectSummaryFit(() => summary.evaluate(summaryGeometry), `updated summary width ${width}`);
     }
     const first = sections.first().locator('.dense-tile');
     await expect(first.nth(0)).toHaveAccessibleName(/-1,234,567,890,123\.45|−1,234,567,890,123\.45/);
@@ -104,6 +135,39 @@ for (const theme of ['light', 'dark']) {
     expect(initial.colors[3][0]).not.toBe(initial.colors[2][0]);
   });
 }
+
+test('summary adapts to wider glyph advances and restores full labels when there is room', async ({ page }) => {
+  const summary = page.locator('.dense-summary');
+  const names = ['過高 1', '過低 1', '門檻異常 1', '正常 1', '未設門檻 9'];
+  await page.evaluate(() => {
+    window.summaryErrors = [];
+    window.addEventListener('error', event => window.summaryErrors.push(event.message));
+  });
+  await expect(summary.getByRole('img')).toHaveCount(names.length);
+  for (const name of names) await expect(summary.getByRole('img', { name, exact: true })).toBeVisible();
+  await summary.evaluate(el => { el.style.letterSpacing = '.75px'; });
+  await expectSummaryFit(() => measureSummary(summary, 300), 'wide glyphs at 300px');
+  await expect(summary.getByRole('img', { name: '過高 1', exact: true }).locator('.dense-word')).toBeHidden();
+  await expectSummaryFit(() => measureSummary(summary, 840), 'wide glyphs at 840px');
+  await expect(summary.getByRole('img', { name: '過高 1', exact: true }).locator('.dense-word')).toBeVisible();
+  await expectSummaryFit(() => measureSummary(summary, 300), 'wide glyphs after shrinking again');
+  for (const name of names) {
+    const badge = summary.getByRole('img', { name, exact: true });
+    await expect(badge).toBeVisible();
+    await expect(badge.locator('span:last-child')).toBeVisible();
+    await expect(badge.locator('span:last-child')).toHaveText(name.split(' ').at(-1));
+  }
+  await page.evaluate(() => {
+    const host = window.card.parentElement;
+    window.card.remove();
+    host.style.width = '840px';
+    host.append(window.card);
+  });
+  await expect(summary.getByRole('img', { name: '過高 1', exact: true }).locator('.dense-word')).toBeVisible();
+  await expectSummaryFit(() => measureSummary(summary, 300), 'wide glyphs after reconnecting');
+  await expect(summary).toContainText('共 13 項');
+  expect(await page.evaluate(() => window.summaryErrors)).toEqual([]);
+});
 
 test('dense 240px tracks contain scientific readings and full descriptive units', async ({ page }) => {
   const unit = 'micromoles of photons per square metre per second';
@@ -409,16 +473,21 @@ test('all six summary states stay in one line with many items and sections', asy
   await expect(card.locator('.dense-tile')).toHaveCount(120);
   const summary = card.locator('.dense-summary');
   await expect(summary.getByRole('img')).toHaveCount(6);
+  for (const label of ['過高', '過低', '無讀值', '門檻異常', '正常', '未設門檻']) {
+    await expect(summary.getByRole('img', { name: `${label} 20`, exact: true })).toBeVisible();
+  }
   await expect(summary).toContainText('共 120 項');
   for (const width of [240, 300, 360, 370, 520, 840]) {
-    const fit = await summary.evaluate((el, width) => {
-      el.getRootNode().host.parentElement.style.width = `${width}px`;
-      const outer = el.getBoundingClientRect();
-      return [...el.children].filter(n => !n.hidden).every(node => {
-        const rect = node.getBoundingClientRect();
-        return rect.left >= outer.left && rect.right <= outer.right + .01 && rect.height < 22;
-      });
-    }, width);
-    expect(fit, `six counts at ${width}px`).toBe(true);
+    await expectSummaryFit(() => measureSummary(summary, width), `six counts at ${width}px`);
+    const { items } = await summary.evaluate(summaryGeometry);
+    expect(items).toHaveLength(7);
+    expect(Math.max(...items.map(item => item.height))).toBeLessThan(22);
+  }
+  await expectSummaryFit(() => measureSummary(summary, 240), 'six counts after shrinking to 240px');
+  await summary.evaluate(el => { el.style.letterSpacing = '.75px'; });
+  await expectSummaryFit(() => summary.evaluate(summaryGeometry), 'six counts with wider glyphs at 240px');
+  for (const badge of await summary.getByRole('img').all()) {
+    await expect(badge.locator('span:last-child')).toBeVisible();
+    await expect(badge.locator('span:last-child')).toHaveText('20');
   }
 });

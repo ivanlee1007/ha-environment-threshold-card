@@ -237,8 +237,8 @@ const DENSE_CSS = `
   border:1px solid var(--divider-color,var(--edge)); border-radius:6px; color:inherit; background:var(--tile); cursor:pointer; }
 .dense-filter[aria-pressed=true] { color:#0c5a55; border-color:#4a9e90; background:#ddf4ee; }
 .dense-summary { display:flex; align-items:center; gap:5px; box-sizing:border-box; min-height:28px; margin:3px 0 0;
-  padding:5px 0; border-block-end:1px solid var(--divider-color,var(--edge)); font-size:11px; white-space:nowrap; }
-.dense-summary > span { color:var(--secondary-text-color,var(--dim)); }
+  padding:5px 0; border-block-end:1px solid var(--divider-color,var(--edge)); font-size:11px; line-height:1.4; white-space:nowrap; }
+.dense-summary > span { flex:none; color:var(--secondary-text-color,var(--dim)); }
 .dense-summary > :is([data-tone=high],[data-tone=low],[data-tone=issue],[data-tone=unavailable]) {
   color:var(--alert-ink); background:var(--fill); border-radius:4px; padding:1px 4px; font-weight:750;
 }
@@ -246,6 +246,10 @@ const DENSE_CSS = `
 .dense-shell [data-tone=low] { --fill:#e5f0ff; --alert-ink:#174f95; --alert-edge:#77a9e8; }
 .dense-shell :is([data-tone=issue],[data-tone=unavailable]) { --fill:#d9e3ea; --alert-ink:#33444e; --alert-edge:#78909c; }
 .dense-short { display:none; }
+.dense-summary[data-fit] .dense-word, .dense-summary:is([data-fit=marks],[data-fit=tight]) .dense-short { display:none; }
+@container (width > 275px) {
+  .dense-summary[data-fit=short] .dense-short { display:inline; }
+}
 .dense-section + .dense-section { margin-block-start:7px; }
 .dense-section h3 { display:flex; align-items:center; gap:9px; font-size:12px; margin:6px 0 3px; font-weight:650; }
 .dense-section-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -294,6 +298,8 @@ const DENSE_CSS = `
   .dense-number { gap:1px; }
   .dense-mark { min-inline-size:10px; }
 }
+.dense-summary[data-fit=tight] { gap:1px; font-size:10px; }
+.dense-summary[data-fit=tight] > :is([data-tone=high],[data-tone=low],[data-tone=issue],[data-tone=unavailable]) { padding-inline:1px; }
 `;
 
 const DENSE_LEGEND = [
@@ -354,6 +360,15 @@ class DenseDisplay {
     });
     this.total = dom('span');
     this.summary.append(...this.badges.map(b => b.el), this.total);
+    this.summaryFrame = null;
+    this.summaryObserver = new ResizeObserver(() => {
+      if (this.summaryFrame !== null) return;
+      // Fitting changes the observed badge widths; do not write inside observer delivery.
+      this.summaryFrame = requestAnimationFrame(() => {
+        this.summaryFrame = null;
+        this.fitSummary();
+      });
+    });
     this.content = dom('div');
     this.empty = dom('p', 'dense-empty');
     this.detail = dom('div', 'dense-detail');
@@ -365,6 +380,36 @@ class DenseDisplay {
     this.panel.append(head, this.summary, this.content, this.empty, this.detail);
     this.shell.append(this.panel);
     root.append(style(DENSE_CSS), this.shell);
+  }
+
+  observeSummary() {
+    if (!this.summary.isConnected) return;
+    // Badge widths also change when an inherited theme font loads or counts change.
+    for (const node of [this.summary, ...this.summary.children]) this.summaryObserver.observe(node);
+  }
+
+  stopObservingSummary() {
+    this.summaryObserver.disconnect();
+    if (this.summaryFrame !== null) cancelAnimationFrame(this.summaryFrame);
+    this.summaryFrame = null;
+  }
+
+  fitSummary() {
+    const row = this.summary;
+    if (!row.isConnected || this.shell.hidden) return;
+    const { left, right, width } = row.getBoundingClientRect();
+    if (!width) return;
+    // The total is the last nonshrinking item, so it defines the end of the row.
+    const fits = () => {
+      const total = this.total.getBoundingClientRect();
+      return total.left >= left - .01 && total.right <= right + .01;
+    };
+    row.removeAttribute('data-fit');
+    if (fits()) return;
+    for (const mode of ['short', 'marks', 'tight']) {
+      setAttr(row, 'data-fit', mode);
+      if (fits()) return;
+    }
   }
 
   createRow() {
@@ -555,7 +600,14 @@ class EnvironmentThresholdCard extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this.dense && !this.dense.shell.hidden) this.dense.update(this.states, this.darkMode);
+    if (this.dense && !this.dense.shell.hidden) {
+      this.dense.update(this.states, this.darkMode);
+      this.dense.observeSummary();
+    }
+  }
+
+  disconnectedCallback() {
+    this.dense?.stopObservingSummary();
   }
 
   setConfig(config) {
@@ -566,9 +618,13 @@ class EnvironmentThresholdCard extends HTMLElement {
       this.panel.remove();
       this.dense.shell.hidden = false;
       this.dense.updateConfig(config, items, this.states, this.darkMode);
+      this.dense.observeSummary();
       return;
     }
-    if (this.dense) this.dense.shell.hidden = true;
+    if (this.dense) {
+      this.dense.shell.hidden = true;
+      this.dense.stopObservingSummary();
+    }
     if (!this.panel.parentNode) this.shadowRoot.append(this.panel);
     if (!sameConfigData(items, this.rows?.map(row => row.item))) {
       this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
