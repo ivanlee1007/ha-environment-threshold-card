@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 const TAG = 'environment-threshold-card';
+const DEFAULT_TITLE = '環境門檻監測';
 const ENTITY_ID = /^sensor\.[a-z0-9_]+$/;
 const MONITORED_SELECTOR = { entity: { filter: [{ domain: 'sensor' }] } };
 const THRESHOLD_DOMAINS = ['sensor', 'input_number', 'number', 'counter'];
@@ -55,6 +56,7 @@ function normalizeUnit(unit, deviceClass) {
   const trimmed = typeof unit === 'string' ? unit.trim() : unit;
   return deviceClass === 'humidity' && /^%(?:h|rh)$/i.test(trimmed) ? '%' : trimmed;
 }
+const evaluationUnit = (savedUnit, liveUnit, deviceClass) => savedUnit == null ? liveUnit : normalizeUnit(savedUnit, deviceClass);
 const SPEED_CLASSES = new Set(['wind_speed', 'speed']);
 function convertSpeed(value, from, to, deviceClass, sourceClass) {
   if (!SPEED_CLASSES.has(deviceClass) || (sourceClass && !SPEED_CLASSES.has(sourceClass))) return undefined;
@@ -74,6 +76,26 @@ const nameOf = (item, states) => item.name || states?.[item.entity]?.attributes?
 const hasBounds = item => item.below != null || item.above != null;
 const numericState = raw => typeof raw === 'string' && DECIMAL.test(raw.trim()) ? Number(raw) : NaN;
 const withUnit = (value, unit) => `${format.format(value)}${unit ? ` ${unit}` : ''}`;
+const compactUnit = unit => unit === '%' ? '%' : unit ? ` ${unit}` : '';
+const customTitle = title => typeof title === 'string' && title.trim() ? title : '';
+
+// Lovelace can replay a fresh config object. Only a change to the item data
+// invalidates its positional draft; title and other card options do not.
+function sameConfigData(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && sameConfigData(a[key], b[key]));
+}
+
+function describeBounds(below, above, unit, flag) {
+  const sides = [['下限', below], ['上限', above]];
+  if (below.value !== undefined && above.value !== undefined && !below.rawUnit && !above.rawUnit && flag !== 'range') {
+    return `${format.format(below.value)}–${format.format(above.value)}${compactUnit(unit)}`;
+  }
+  return sides.flatMap(([side, bound]) => bound.reason ? [`${side}：${bound.reason}`] : bound.value === undefined ? [] :
+    [`${side} ${format.format(bound.value)}${compactUnit(bound.rawUnit ?? unit)}`]).join(' · ');
+}
 
 function validate(config) {
   const items = config?.items ?? [];
@@ -100,18 +122,20 @@ function resolveBound(configured, states, monitoredUnit, deviceClass) {
   const value = numericState(source?.state);
   if (!Number.isFinite(value)) {
     const reason = !source ? '找不到實體' : ['unknown', 'unavailable', ''].includes(source.state) ? '無讀值' : '不是有限數字';
-    return { issue: 'source', label: `${configured}：${reason}` };
+    return { issue: 'source', reason, label: `${configured}：${reason}` };
   }
   const sourceClass = deviceClassOf(source);
   const aliasClass = deviceClass === 'humidity' && (!sourceClass || sourceClass === 'humidity') ? deviceClass : undefined;
   const sourceUnit = normalizeUnit(unitOf(source), aliasClass);
   // Unitless numeric helpers are intentional setpoints; sensors must match units.
   const explicitUnit = sourceUnit !== '' || ENTITY_ID.test(configured);
-  const label = `${configured} = ${withUnit(value, sourceUnit || (explicitUnit ? '' : monitoredUnit))}`;
-  if (monitoredUnit === undefined || !explicitUnit || sourceUnit === monitoredUnit) return { value, label };
+  const displayUnit = normalizeUnit(unitOf(source));
+  const label = `${configured} = ${withUnit(value, displayUnit || (explicitUnit ? '' : monitoredUnit))}`;
+  if (monitoredUnit === undefined) return { value, label, rawUnit: displayUnit };
+  if (!explicitUnit || sourceUnit === monitoredUnit) return { value, label };
   const converted = convertSpeed(value, sourceUnit, monitoredUnit, deviceClass, sourceClass);
-  if (converted === undefined) return { issue: 'source-unit', label: `${label}（單位不符）` };
-  if (!Number.isFinite(converted) || (value !== 0 && converted === 0)) return { issue: 'source', label: `${label}（換算結果無效）` };
+  if (converted === undefined) return { issue: 'source-unit', reason: '單位不符', label: `${label}（單位不符）` };
+  if (!Number.isFinite(converted) || (value !== 0 && converted === 0)) return { issue: 'source', reason: '換算結果無效', label: `${label}（換算結果無效）` };
   return { value: converted, converted: true, label: `${label} → ${withUnit(converted, monitoredUnit)}` };
 }
 
@@ -121,15 +145,15 @@ function evaluate(item, states) {
   const unit = normalizeUnit(unitOf(state), deviceClass);
   const value = numericState(state?.state);
   const usable = Number.isFinite(value);
-  const boundsUnit = item.unit != null ? normalizeUnit(item.unit, deviceClass) : (state ? unit : undefined);
+  const boundsUnit = evaluationUnit(item.unit, state ? unit : undefined, deviceClass);
   const below = resolveBound(item.below, states, boundsUnit, deviceClass);
   const above = resolveBound(item.above, states, boundsUnit, deviceClass);
-  const bounds = [below.label && `下限 ${below.label}`, above.label && `上限 ${above.label}`].filter(Boolean).join(' · ');
+
   const flag = !usable ? 'unavailable' : !hasBounds(item) ? 'unset' : item.unit != null && boundsUnit !== unit ? 'unit' :
     below.issue ?? above.issue ?? (compareValues(below.value, above.value, below.converted || above.converted) >= 0 ? 'range' :
       compareValues(value, above.value, above.converted) > 0 ? 'high' :
         compareValues(value, below.value, below.converted) < 0 ? 'low' : 'normal');
-  return [flag, usable ? format.format(value) : '—', usable ? unit : '', bounds];
+  return [flag, usable ? format.format(value) : '—', usable ? unit : '', describeBounds(below, above, boundsUnit, flag)];
 }
 
 const CARD_CSS = `
@@ -202,7 +226,7 @@ class EnvironmentThresholdCard extends HTMLElement {
     const items = validate(config);
     this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
     this.grid.replaceChildren(...this.rows.map(row => row.tile));
-    text(this.titleNode, typeof config?.title === 'string' && config.title.trim() ? config.title : '環境門檻監測');
+    text(this.titleNode, customTitle(config?.title) || DEFAULT_TITLE);
     this.updateStates();
   }
 
@@ -241,14 +265,30 @@ class EnvironmentThresholdCard extends HTMLElement {
 }
 
 const EDITOR_CSS = `
-:host { display:block; }
+:host { display:block; min-inline-size:0; container-type:inline-size; }
 [hidden] { display:none !important; }
+section { min-inline-size:0; }
+.appearance { padding-block-end:10px; border-block-end:1px solid var(--divider-color,#d9e3ea); }
+.monitoring, .thresholds { padding-block-start:10px; }
+.thresholds { margin-block-start:10px; border-block-start:1px solid var(--divider-color,#d9e3ea); }
+h3 { margin:0 0 6px; font-size:1em; }
 .list,.actions { display:flex; flex-wrap:wrap; gap:8px; margin-block:8px; }
-.fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr)); gap:8px; }
+.list [aria-pressed=true] { border-color:var(--primary-color,#1976d2); font-weight:700; }
+.fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 label { display:grid; gap:4px; min-width:0; }
-.bound { display:grid; align-content:start; gap:4px; min-width:0; }
-ha-selector { display:block; min-width:0; }
+.bound { display:grid; grid-template-columns:minmax(0,.38fr) minmax(0,.8fr) minmax(0,1.3fr); align-items:end; gap:6px; margin-block:8px; }
+.bound strong { align-self:center; }
+.source-detail,.unit-note { margin:0; font-size:.86em; color:var(--secondary-text-color,#4d5965); overflow-wrap:anywhere; }
+.source-detail { grid-column:1/-1; }
+ha-selector { display:block; width:100%; min-width:0; min-height:44px; }
 .full { grid-column:1/-1; }
+@container (max-width:355px) {
+  .bound { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .bound strong { grid-column:1/-1; }
+}
+@container (max-width:275px) {
+  .fields,.bound { grid-template-columns:minmax(0,1fr); }
+}
 button,input,select { box-sizing:border-box; min-height:44px; font:inherit; color:inherit; background:var(--card-background-color,#fff); border:1px solid var(--divider-color,#a0aab2); border-radius:8px; padding:6px 9px; }
 input,select { width:100%; min-width:0; }
 button { cursor:pointer; max-width:100%; overflow-wrap:anywhere; }
@@ -260,19 +300,39 @@ button:focus-visible,input:focus-visible,select:focus-visible { outline:2px soli
 class EnvironmentThresholdEditor extends HTMLElement {
   constructor() {
     super();
+    this.titleInput = dom('input');
+    this.titleInput.placeholder = `留空：${DEFAULT_TITLE}`;
+    this.titleInput.addEventListener('input', () => {
+      if (!this.config) return;
+      const title = customTitle(this.titleInput.value);
+      if (title === customTitle(this.config.title)) return;
+      this.config = { ...this.config, type: `custom:${TAG}` };
+      if (title) this.config.title = title;
+      else delete this.config.title;
+      this.emitConfig();
+    });
+    const appearance = dom('section', 'appearance');
+    appearance.append(dom('h3', '', '卡片外觀'), this.field('卡片標題', this.titleInput));
+    const monitoring = dom('section', 'monitoring');
     this.list = dom('div', 'list');
     this.form = dom('form');
     this.form.tabIndex = -1;
-    this.form.hidden = true;
     this.addButton = this.button('新增監測項目', () => this.openItem());
-    this.attachShadow({ mode: 'open' }).append(style(EDITOR_CSS), this.list, this.form, this.addButton);
+    this.fields = dom('div', 'fields');
+    this.thresholds = dom('section', 'thresholds');
+    this.actions = dom('div');
+    this.form.append(this.fields, this.thresholds, this.actions);
+    monitoring.append(dom('h3', '', '監測項目'), this.list, this.addButton, this.form);
+    this.attachShadow({ mode: 'open' }).append(style(EDITOR_CSS), appearance, monitoring);
   }
 
   setConfig(config) {
     const next = { ...config, items: validate(config) };
-    if (JSON.stringify(next) === JSON.stringify(this.config)) return;
+    const title = customTitle(next.title);
+    if (customTitle(this.titleInput.value) !== title) this.titleInput.value = title;
+    const itemsChanged = !sameConfigData(next.items, this.config?.items);
     this.config = next;
-    this.closeItem();
+    if (itemsChanged) this.closeItem();
   }
 
   set hass(hass) {
@@ -285,6 +345,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
       for (const picker of sources) if (picker.selector !== selector) picker.selector = selector;
     }
     for (const picker of pickers) picker.hass = hass;
+    this.updateSourceDetails?.();
   }
 
   button(label, handler) {
@@ -338,46 +399,66 @@ class EnvironmentThresholdEditor extends HTMLElement {
   boundField(key, title, initialValue, selector) {
     const node = dom('div', 'bound');
     const mode = dom('select');
-    mode.append(new Option('手動輸入', 'manual'), new Option('實體來源', 'entity'));
+    mode.setAttribute('aria-label', `${title}來源`);
+    mode.append(new Option('不設定', 'none'), new Option('手動數值', 'manual'), new Option('實體來源', 'entity'));
     const input = dom('input');
     input.type = 'number';
     input.step = 'any';
+    input.setAttribute('aria-label', title);
     input.placeholder = '留空＝不判斷';
     let source = typeof initialValue === 'string' ? initialValue : undefined;
     input.value = typeof initialValue === 'number' ? initialValue : '';
-    mode.value = source ? 'entity' : 'manual';
-    const picker = this.entityPicker(`${title}實體`, selector, THRESHOLD_ID, () => source, false, id => { source = id; });
+    mode.value = source ? 'entity' : typeof initialValue === 'number' ? 'manual' : 'none';
+    const picker = this.entityPicker(`${title}實體`, selector, THRESHOLD_ID, () => source, false, id => {
+      source = id;
+      this.updateSourceDetails?.();
+    });
     picker.dataset.bound = key;
-    const manual = this.field(title, input);
+    const manual = this.field('數值', input);
+    const detail = dom('p', 'source-detail');
     const sync = () => {
       picker.hidden = mode.value !== 'entity';
-      manual.hidden = input.disabled = !picker.hidden;
+      manual.hidden = input.disabled = mode.value !== 'manual';
+      this.updateSourceDetails?.();
     };
     mode.addEventListener('change', sync);
-    node.append(this.field(`${title}來源`, mode), manual, picker);
+    node.append(dom('strong', '', title), this.field('來源', mode), manual, picker, detail);
     sync();
     return {
       node,
-      value: () => mode.value === 'entity' ? source : input.value === '' ? undefined : input.valueAsNumber,
+      value: () => mode.value === 'entity' ? source : mode.value === 'manual' && input.value !== '' ? input.valueAsNumber : undefined,
+      updateDetail: (unit, deviceClass) => {
+        const label = mode.value === 'entity' && source ? resolveBound(source, this.states, unit, deviceClass).label : '';
+        detail.hidden = !label;
+        text(detail, label);
+      },
       reset: () => {
         source = picker.value = undefined;
         input.value = '';
-        mode.value = 'manual';
+        mode.value = 'none';
         sync();
       },
     };
   }
 
   closeItem(returnTo) {
-    this.form.hidden = true;
-    this.form.replaceChildren();
+    for (const region of [this.fields, this.thresholds, this.actions]) {
+      region.hidden = true;
+      region.replaceChildren();
+    }
     this.form.onsubmit = null;
+    this.updateSourceDetails = undefined;
     this.addButton.hidden = false;
-    this.list.replaceChildren(...this.config.items.map((item, index) => this.button(nameOf(item, this.states), () => this.openItem(index))));
+    this.list.replaceChildren(...this.config.items.map((item, index) => {
+      const button = this.button(nameOf(item, this.states), () => this.openItem(index));
+      button.setAttribute('aria-pressed', 'false');
+      return button;
+    }));
     if (returnTo !== undefined) (this.list.children[returnTo] ?? this.addButton).focus();
   }
 
   openItem(index) {
+    this.updateSourceDetails = undefined;
     const item = this.config.items[index];
     let selectedEntity = item?.entity;
     const kind = dom('select');
@@ -389,7 +470,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
     const selector = this.thresholdSelector();
     const below = this.boundField('below', '下限', item?.below, selector);
     const above = this.boundField('above', '上限', item?.above, selector);
-    const note = dom('div');
+    const note = dom('p', 'unit-note');
     const error = dom('p');
     error.setAttribute('role', 'alert');
     error.hidden = true;
@@ -420,18 +501,27 @@ class EnvironmentThresholdEditor extends HTMLElement {
       kind.value = suggested(id);
       error.hidden = true;
       updateNote();
+      this.updateSourceDetails();
     });
     entity.classList.add('full');
+    this.updateSourceDetails = () => {
+      const deviceClass = deviceClassOf(currentState());
+      // Provenance follows card evaluation; draftUnit still guards what Apply can save.
+      const savedUnit = selectedEntity === item?.entity ? item?.unit : undefined;
+      const unit = evaluationUnit(savedUnit, currentUnit(), deviceClass);
+      for (const bound of [below, above]) bound.updateDetail(unit, deviceClass);
+    };
+    this.updateSourceDetails();
     updateNote();
-    const fields = dom('div', 'fields');
-    fields.append(entity, this.field('感測類型', kind), this.field('顯示名稱（選填）', label), below.node, above.node);
+    this.fields.replaceChildren(entity, this.field('顯示名稱（選填）', label), this.field('感測類型', kind));
     const buttons = dom('div', 'actions');
     const apply = dom('button', 'primary', '套用項目');
     apply.type = 'submit';
     const focusIndex = index ?? this.config.items.length;
     buttons.append(apply, this.button('取消', () => this.closeItem(focusIndex)));
     if (item) buttons.append(this.button('移除項目', () => this.commit(this.config.items.filter((_, i) => i !== index), index)));
-    this.form.replaceChildren(fields, note, consentField, error, buttons);
+    this.thresholds.replaceChildren(dom('h3', '', '門檻設定'), note, below.node, above.node, consentField);
+    this.actions.replaceChildren(error, buttons);
     this.form.onsubmit = event => {
       event.preventDefault();
       const showError = message => { text(error, message); error.hidden = false; };
@@ -463,7 +553,8 @@ class EnvironmentThresholdEditor extends HTMLElement {
       catch (e) { showError(e.message); return; }
       this.commit(items, focusIndex);
     };
-    this.form.hidden = false;
+    for (const region of [this.fields, this.thresholds, this.actions]) region.hidden = false;
+    [...this.list.children].forEach((button, i) => button.setAttribute('aria-pressed', String(i === index)));
     this.addButton.hidden = true;
     this.form.focus();
   }
@@ -471,6 +562,10 @@ class EnvironmentThresholdEditor extends HTMLElement {
   commit(items, focusIndex) {
     this.config = { ...this.config, type: `custom:${TAG}`, items };
     this.closeItem(focusIndex);
+    this.emitConfig();
+  }
+
+  emitConfig() {
     this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: this.config }, bubbles: true, composed: true }));
   }
 }

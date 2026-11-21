@@ -12,6 +12,14 @@ async function mount(page, items, states) {
     card.setConfig({ items });
     card.hass = { states };
     document.querySelector('main').append(card);
+    window.openDetails = async index => {
+      const Editor = await customElements.whenDefined('environment-threshold-card-editor');
+      const editor = new Editor();
+      editor.hass = { states };
+      editor.setConfig({ items });
+      document.querySelector('main').append(editor);
+      editor.shadowRoot.querySelectorAll('.list button')[index].click();
+    };
   }, { items, states });
 }
 
@@ -31,7 +39,9 @@ test('the diagnosed temperature, relative humidity and wind-speed configurations
     'input_number.wind_high': reading(5, 'm/s'),
   });
   await expect(page.locator('.status')).toHaveText(['正常', '正常', '正常']);
-  await expect(page.locator('.bounds').nth(2)).toContainText('5 m/s → 18 km/h');
+  await expect(page.locator('.bounds')).toHaveText(['20–25 °C', '上限 80%', '上限 18 km/h']);
+  await page.evaluate(() => window.openDetails(2));
+  await expect(page.getByText('input_number.wind_high = 5 m/s → 18 km/h', { exact: true })).toBeVisible();
   await expect(page.locator('.summary')).toHaveText('所有監測皆在範圍內');
 });
 
@@ -48,7 +58,9 @@ test('reverse conversion, equality, updates and unsupported units stay distinct'
     'sensor.humidity': reading(90, '%', 'humidity'),
   });
   await expect(page.locator('.status')).toHaveText(['正常', '門檻單位不符', '門檻單位不符', '↑ 高於上限']);
-  await expect(page.locator('.bounds').first()).toContainText('1.08 km/h → 0.3 m/s');
+  await expect(page.locator('.bounds').first()).toHaveText('上限 0.3 m/s');
+  await page.evaluate(() => window.openDetails(0));
+  await expect(page.getByText('sensor.wind_limit = 1.08 km/h → 0.3 m/s', { exact: true })).toBeVisible();
   const tile = page.locator('.tile').first();
   await tile.evaluate(el => {
     const card = el.getRootNode().host;
