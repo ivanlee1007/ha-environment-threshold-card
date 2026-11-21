@@ -178,6 +178,11 @@ h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; 
 .summary[data-tone=alarm] { border-inline-start:4px solid #d44731; background:color-mix(in srgb,#d44731 13%,transparent); }
 .summary[data-tone=warning] { border-inline-start:4px solid #78909c; }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,138px),1fr)); gap:8px; }
+.standard-section + .standard-section { margin-block-start:12px; }
+.standard-section h3 { display:flex; align-items:baseline; gap:8px; margin:0 0 6px; font-size:1em; overflow-wrap:anywhere; }
+.standard-section-count { flex:none; color:var(--secondary-text-color,#4d5965); font-size:.85em; font-weight:400; white-space:nowrap; }
+.standard-section-empty { margin:0; color:var(--secondary-text-color,#4d5965); font-size:.85em; }
+.standard-section .grid[hidden] { display:none; }
 .tile { min-inline-size:0; display:grid; grid-template-columns:30px minmax(0,1fr); gap:7px; align-items:start; padding:8px; border-radius:10px; border:1px solid var(--divider-color,#d9e3ea); overflow-wrap:anywhere; }
 .glyph { width:30px; height:30px; display:grid; place-items:center; background:var(--secondary-background-color,#edf3f6); border-radius:8px; }
 .glyph svg { width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
@@ -219,6 +224,18 @@ function tileNodes() {
   body.append(name, reading, status, bounds);
   tile.append(glyph, body);
   return { tile, path, name, value, unitNode, status, bounds };
+}
+
+function standardSectionNodes() {
+  const node = dom('section', 'standard-section');
+  const heading = dom('h3');
+  const title = dom('span');
+  const count = dom('span', 'standard-section-count');
+  heading.append(title, count);
+  const grid = dom('div', 'grid');
+  const empty = dom('p', 'standard-section-empty', '尚未加入監測項目');
+  node.append(heading, grid, empty);
+  return { node, title, count, grid, empty };
 }
 
 const DENSE_CSS = `
@@ -597,6 +614,7 @@ class EnvironmentThresholdCard extends HTMLElement {
     this.summary = dom('p', 'summary');
     this.summary.setAttribute('role', 'status');
     this.grid = dom('div', 'grid');
+    this.standardSections = new Map();
     panel.append(this.titleNode, this.summary, this.grid);
     this.attachShadow({ mode: 'open' }).append(style(CARD_CSS), panel);
   }
@@ -618,6 +636,7 @@ class EnvironmentThresholdCard extends HTMLElement {
       if (!this.dense) this.dense = new DenseDisplay(this.shadowRoot);
       // Legacy labels can contain entity IDs; keep their panel out of the dense DOM.
       this.panel.remove();
+      if (!this.dense.shell.parentNode) this.shadowRoot.append(this.dense.shell);
       this.dense.shell.hidden = false;
       this.dense.updateConfig(config, items, this.states, this.darkMode);
       this.dense.observeSummary();
@@ -626,12 +645,13 @@ class EnvironmentThresholdCard extends HTMLElement {
     if (this.dense) {
       this.dense.shell.hidden = true;
       this.dense.stopObservingSummary();
+      this.dense.shell.remove();
     }
     if (!this.panel.parentNode) this.shadowRoot.append(this.panel);
     if (!sameConfigData(items, this.rows?.map(row => row.item))) {
       this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
-      this.grid.replaceChildren(...this.rows.map(row => row.tile));
     }
+    this.updateStandardSections(config?.sections ?? []);
     text(this.titleNode, customTitle(config?.title) || DEFAULT_TITLE);
     this.updateStates();
   }
@@ -647,7 +667,39 @@ class EnvironmentThresholdCard extends HTMLElement {
   getCardSize() {
     if (this.dense && !this.dense.shell.hidden) return 1 + [...this.dense.sections.values()]
       .reduce((height, section) => height + Math.max(1, Math.ceil(section.rows.length / 4)), 0);
+    if (this.standardSections.size) return 1 + [...this.standardSections.values()]
+      .reduce((height, section) => height + 1 + (section.grid.childElementCount ? 2 * Math.ceil(section.grid.childElementCount / 2) : 1), 0);
     return 1 + Math.max(1, Math.ceil((this.rows?.length ?? 0) / 2)) * 2;
+  }
+
+  updateStandardSections(sections) {
+    if (!sections.length) {
+      this.standardSections.clear();
+      reconcileChildren(this.grid, this.rows.map(row => row.tile));
+      reconcileChildren(this.panel, [this.titleNode, this.summary, this.grid]);
+      return;
+    }
+    const views = new Map();
+    const add = (id, label) => {
+      const view = this.standardSections.get(id) ?? standardSectionNodes();
+      text(view.title, label);
+      const tiles = [];
+      views.set(id, { ...view, tiles });
+      return tiles;
+    };
+    for (const section of sections) add(section.id, sectionTitle(section));
+    for (const { item, tile } of this.rows) {
+      const tiles = views.get(item.section)?.tiles ?? views.get(null)?.tiles ?? add(null, '未分組');
+      tiles.push(tile);
+    }
+    this.standardSections = views;
+    reconcileChildren(this.panel, [this.titleNode, this.summary, ...[...views.values()].map(view => view.node)]);
+    for (const { count, grid, empty, tiles } of views.values()) {
+      text(count, `${tiles.length} 項`);
+      hide(grid, !tiles.length);
+      hide(empty, Boolean(tiles.length));
+      reconcileChildren(grid, tiles);
+    }
   }
 
   updateStates() {
@@ -775,7 +827,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
       this.syncSections();
     });
     this.addSectionButton = this.button('新增段落', () => {
-      if (!denseMode(this.config)) return;
+      if (!this.config) return;
       const sections = this.config.sections ?? [];
       const used = new Set([...sections.map(section => section.id), ...this.config.items.map(item => item.section)]);
       let n = 1;
@@ -788,14 +840,14 @@ class EnvironmentThresholdEditor extends HTMLElement {
     this.sectionTitleInput = dom('input');
     this.sectionTitleInput.placeholder = '未命名段落';
     this.sectionTitleInput.addEventListener('input', () => {
-      if (!denseMode(this.config)) return;
+      if (!this.config) return;
       const sections = this.config.sections ?? [];
       const selected = sections.find(section => section.id === this.selectedSection);
       if (!selected || this.sectionTitleInput.value === selected.title) return;
       this.commitSections(sections.map(section => section === selected ? { ...section, title: this.sectionTitleInput.value } : section));
     });
     const remove = this.button('移除段落', () => {
-      if (!denseMode(this.config)) return;
+      if (!this.config) return;
       const sections = this.config.sections ?? [];
       const index = sections.findIndex(section => section.id === this.selectedSection);
       if (index < 0) return;
@@ -821,17 +873,17 @@ class EnvironmentThresholdEditor extends HTMLElement {
   }
 
   syncSections() {
+    if (!this.config) return;
     const sections = this.config.sections ?? [];
-    const dense = denseMode(this.config);
-    this.density.checked = dense;
-    hide(this.sectionControls, !dense);
+    this.density.checked = denseMode(this.config);
+    hide(this.sectionControls, false);
     const selected = sections.find(section => section.id === this.selectedSection) ?? sections[0];
     this.selectedSection = selected?.id;
     this.setSectionOptions(this.sectionSelect, sections, this.selectedSection);
     this.sectionSelect.disabled = !selected;
     hide(this.sectionFields, !selected);
     if (this.sectionTitleInput.value !== (selected?.title ?? '')) this.sectionTitleInput.value = selected?.title ?? '';
-    this.updateAssignment?.(sections, dense);
+    this.updateAssignment?.(sections);
   }
 
   setSectionOptions(select, sections, value, unassigned = false) {
@@ -992,17 +1044,16 @@ class EnvironmentThresholdEditor extends HTMLElement {
     let draftedSection = item?.section;
     let previousSections = new Set();
     assignment.addEventListener('change', () => {
-      if (!assignmentField.hidden && this.fields.contains(assignment) &&
+      if (this.fields.contains(assignment) &&
           (!assignment.value || previousSections.has(assignment.value))) draftedSection = assignment.value || undefined;
     });
-    this.updateAssignment = (sections, dense) => {
+    this.updateAssignment = sections => {
       const available = new Set(sections.map(section => section.id));
       if (previousSections.has(draftedSection) && !available.has(draftedSection)) draftedSection = undefined;
       previousSections = available;
       this.setSectionOptions(assignment, sections, available.has(draftedSection) ? draftedSection : undefined, true);
-      hide(assignmentField, !dense);
     };
-    this.updateAssignment(this.config.sections ?? [], denseMode(this.config));
+    this.updateAssignment(this.config.sections ?? []);
     const selector = this.thresholdSelector();
     const below = this.boundField('below', '下限', item?.below, selector);
     const above = this.boundField('above', '上限', item?.above, selector);

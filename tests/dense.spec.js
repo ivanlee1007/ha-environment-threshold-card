@@ -371,7 +371,115 @@ test('invalid section schema is refused without replacing valid tiles; unknown a
   await expect(page.locator('.dense-section h3').last()).toHaveText('未分組1 項');
 });
 
-test('native editor saves section CRUD and independent assignments through HA echoes', async ({ page }) => {
+for (const theme of ['light', 'dark']) {
+  test(`standard displays shared sections in its responsive tile layout (${theme})`, async ({ page }) => {
+    const requests = [];
+    page.on('request', request => requests.push(request.url()));
+    await page.route('**/*', route => route.abort());
+    await page.emulateMedia({ colorScheme: theme });
+    await page.evaluate(theme => {
+      const host = document.querySelector('#host');
+      if (theme === 'dark') host.style.cssText += ';--primary-text-color:#e7eef4;--secondary-text-color:#c4d0da;--ha-card-background:#18242d;--secondary-background-color:#293843;--divider-color:#465763;--ha-card-border-color:#465763';
+      window.ha.themes = { darkMode: theme === 'dark' };
+      window.card.hass = window.ha;
+      const [a, b, c] = window.config.sections;
+      const items = window.config.items;
+      const select = (i, name) => ({ ...items[i], name });
+      const { section, ...unassigned } = select(7, '手動未分組');
+      window.config = { ...window.config, sections: [b, a, c], display_mode: 'standard', items: [
+        select(0, '北側溫度'), select(6, '育苗溫度'), unassigned, select(1, '南側溫度'),
+        select(12, '舊段落項目'), select(2, '風速測點'), select(3, '校正測點'), select(4, '後側溫度'), select(5, '很長的感測器名稱'),
+      ] };
+      if (theme === 'dark') delete window.config.display_mode;
+      window.card.setConfig(structuredClone(window.config));
+    }, theme);
+    const card = page.locator(cardTag);
+    const sections = card.locator('.standard-section');
+    await expect(sections.locator('h3')).toHaveText(['室外1 項', '室外6 項', '空白0 項', '未分組2 項'], { timeout: 1200 });
+    await expect(sections.nth(0).locator('.name')).toHaveText(['育苗溫度']);
+    await expect(sections.nth(1).locator('.name')).toHaveText(['北側溫度', '南側溫度', '風速測點', '校正測點', '後側溫度', '很長的感測器名稱']);
+    await expect(sections.nth(2).getByText('尚未加入監測項目')).toBeVisible();
+    await expect(sections.nth(3).locator('.name')).toHaveText(['手動未分組', '舊段落項目']);
+    await expect(card.locator('.tile')).toHaveCount(9);
+    await expect(card.locator('.dense-grid')).toHaveCount(0);
+    await expect(card.getByRole('button')).toHaveCount(0);
+    const low = sections.nth(1).locator('.tile').first();
+    await expect(low.locator('svg')).toBeVisible();
+    await expect(low.locator('.reading')).toHaveText('14.7°C');
+    await expect(low.locator('.status')).toHaveText('↓ 低於下限');
+    await expect(low.locator('.bounds')).toHaveText('15–30 °C');
+    await expect(card.getByRole('status')).toContainText('1 項過低');
+    expect(await card.evaluate(el => el.getCardSize())).toBe(16);
+
+    const resize = width => card.evaluate((el, width) => { el.parentElement.style.width = `${width}px`; }, width);
+    for (const [width, columns] of [[300, 1], [960, 6], [300, 1]]) {
+      await resize(width);
+      const geometry = await card.evaluate(el => {
+        const root = el.shadowRoot;
+        const grids = [...root.querySelectorAll('.standard-section .grid')].filter(g => g.children.length);
+        return { viewport: innerWidth, width: el.getBoundingClientRect().width, fits: el.scrollWidth === el.clientWidth,
+          columns: grids.map(g => [...g.children].filter(t => Math.abs(t.offsetTop - g.firstElementChild.offsetTop) < 1).length),
+          intact: grids.every(g => [...g.children].every(t => t.scrollWidth === t.clientWidth &&
+            t.getBoundingClientRect().right <= g.getBoundingClientRect().right + .01)) };
+      });
+      expect(geometry).toEqual({ viewport: 1200, width, fits: true,
+        columns: [1, columns, Math.min(2, columns)], intact: true });
+    }
+
+    // Equivalent commits and telemetry must not replace or detach animated cells.
+    expect(await low.evaluate(tile => {
+      const card = window.card;
+      const glyph = tile.querySelector('.glyph');
+      const animation = glyph.getAnimations()[0];
+      const observer = new MutationObserver(() => {});
+      observer.observe(tile.parentElement, { childList: true });
+      card.setConfig(structuredClone(window.config));
+      card.hass = { ...window.ha, states: { ...window.ha.states } };
+      const mutations = observer.takeRecords().length;
+      observer.disconnect();
+      const renamed = structuredClone(window.config);
+      renamed.sections[1].title = '改名';
+      card.setConfig(renamed);
+      const attached = card.shadowRoot.querySelectorAll('.standard-section')[1].querySelector('.tile') === tile;
+      card.setConfig(structuredClone(window.config));
+      return [mutations, attached, Boolean(animation), glyph.getAnimations()[0] === animation];
+    })).toEqual([0, true, true, true]);
+
+    const capture = async mode => {
+      if (!process.env.ETC_SECTION_SCREENSHOTS) return;
+      for (const width of [300, 960]) {
+        await resize(width);
+        await card.screenshot({ path: `${process.env.ETC_SECTION_SCREENSHOTS}/${mode}-${theme}-${width}.png`, animations: 'disabled' });
+      }
+    };
+    await capture('standard-grouped');
+    await card.evaluate(el => el.setConfig({ ...window.config, display_mode: 'dense' }));
+    await expect(card.locator('.dense-section h3')).toHaveText(['室外1 項', '室外6 項', '空白0 項', '未分組2 項']);
+    await expect(card.locator('.tile')).toHaveCount(0);
+    await capture('dense-grouped');
+    await card.evaluate(el => el.setConfig(structuredClone(window.config)));
+    await expect(sections.locator('h3')).toHaveText(['室外1 項', '室外6 項', '空白0 項', '未分組2 項']);
+    await expect(sections.nth(1).locator('.name').first()).toHaveText('北側溫度');
+    await expect(card.locator('.dense-grid')).toHaveCount(0);
+
+    for (const clean of [{ sections: [] }, {}]) {
+      await card.evaluate((el, clean) => {
+        const { sections, ...config } = window.config;
+        el.setConfig({ ...config, ...clean });
+      }, clean);
+      await expect(card.locator('ha-card > .grid > .tile')).toHaveCount(9);
+      await expect(card.locator('h3')).toHaveCount(0);
+      await expect(card.locator('.tile .name').first()).toHaveText('北側溫度');
+      expect(await card.evaluate(el => el.getCardSize())).toBe(11);
+    }
+    await capture('standard-legacy');
+    expect(await page.evaluate(() => window.calls)).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+}
+
+for (const mode of ['standard', 'dense']) {
+test(`graphical editor saves section CRUD and assignments through HA echoes (${mode})`, async ({ page }) => {
   await page.evaluate(() => {
     window.config = { items: [{ entity: 'sensor.dense_0', name: '既有溫度', above: 'number.secret_limit', unit: '°C' }] };
     window.mountEditor();
@@ -384,7 +492,8 @@ test('native editor saves section CRUD and independent assignments through HA ec
   const assignment = editor.getByLabel('所屬段落', { exact: true });
   const picker = editor.locator('ha-selector.full');
   await expect(dense).not.toBeChecked({ timeout: 1200 });
-  await dense.check();
+  if (mode === 'dense') await dense.check();
+  await expect(findButton('新增段落')).toBeVisible({ timeout: 1200 });
   await findButton('新增段落').click();
   const first = await section.inputValue();
   await title.fill('室外');
@@ -402,9 +511,11 @@ test('native editor saves section CRUD and independent assignments through HA ec
   await page.keyboard.type('ABC');
   expect(await title.evaluate(el => [el === window.sectionTitle, el.getRootNode().activeElement === el, el.selectionStart])).toEqual([true, true, 3]);
   expect(await picker.evaluate(el => el === window.picker)).toBe(true);
-  await dense.uncheck();
-  await expect(assignment).toBeHidden();
-  await dense.check();
+  await dense.setChecked(mode === 'standard');
+  await expect(assignment).toBeVisible();
+  await expect(assignment).toHaveValue(first);
+  expect(await picker.evaluate(el => el === window.picker)).toBe(true);
+  await dense.setChecked(mode === 'dense');
   await expect(assignment).toHaveValue(first);
   await findButton('取消').click();
   await findButton('既有溫度').click();
@@ -412,6 +523,14 @@ test('native editor saves section CRUD and independent assignments through HA ec
   await assignment.selectOption(first);
   await findButton('套用項目').click();
   expect(await page.evaluate(() => window.config.items)).toMatchObject([{ section: first, above: 'number.secret_limit', unit: '°C' }]);
+  await page.evaluate(() => {
+    window.editor.remove();
+    window.mountEditor();
+  });
+  await findButton('既有溫度').click();
+  await expect(assignment).toHaveValue(first);
+  await expect(source).toContainText('number.secret_limit');
+  await findButton('取消').click();
 
   await findButton('新增監測項目').click();
   await picker.evaluate(el => el.dispatchEvent(new CustomEvent('value-changed', { detail: { value: 'sensor.dense_1' }, bubbles: true })));
@@ -426,13 +545,15 @@ test('native editor saves section CRUD and independent assignments through HA ec
     expect.objectContaining({ entity: 'sensor.dense_1', section: second }),
   ]);
   expect(await page.evaluate(() => window.config.items[0])).not.toHaveProperty('section');
-  await expect(page.locator('.dense-section h3')).toHaveText(['ABC室外1 項', '未分組1 項']);
+  const headings = page.locator(`.${mode}-section h3`);
+  await expect(headings).toHaveText(['ABC室外1 項', '未分組1 項']);
   await findButton('sensor.dense_1').click();
   await assignment.selectOption('');
   await findButton('套用項目').click();
-  await expect(page.locator('.dense-section h3')).toHaveText(['ABC室外0 項', '未分組2 項']);
+  await expect(headings).toHaveText(['ABC室外0 項', '未分組2 項']);
   expect(await page.evaluate(() => window.calls)).toEqual([]);
 });
+}
 
 test('assignment-only edits preserve missing-sensor YAML thresholds; stale drafts cannot reassign a replacement item', async ({ page }) => {
   await page.evaluate(() => {
