@@ -23,6 +23,10 @@ SOFTWARE.
 */
 const TAG = 'environment-threshold-card';
 const ENTITY_ID = /^sensor\.[a-z0-9_]+$/;
+const MONITORED_SELECTOR = { entity: { filter: [{ domain: 'sensor' }] } };
+const THRESHOLD_DOMAINS = ['sensor', 'input_number', 'number', 'counter'];
+const THRESHOLD_ID = new RegExp(`^(?:${THRESHOLD_DOMAINS.join('|')})\\.[a-z0-9_]+$`);
+const THRESHOLD_FILTER = THRESHOLD_DOMAINS.map(domain => ({ domain }));
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 const KINDS = new Map([
   ['light', ['光照', 'M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z']],
@@ -32,7 +36,10 @@ const KINDS = new Map([
   ['custom', ['其他感測', 'M2 12h5l3-7 4 14 3-7h5']],
 ]);
 const DEVICE_KINDS = new Map([['illuminance', 'light'], ['temperature', 'temperature'], ['humidity', 'humidity'], ['wind_speed', 'wind']]);
-const STATUS = { high: '↑ 高於上限', low: '↓ 低於下限', normal: '正常', unavailable: '無讀值', unset: '未設門檻', unit: '單位已變更' };
+const STATUS = {
+  high: '↑ 高於上限', low: '↓ 低於下限', normal: '正常', unavailable: '無讀值', unset: '未設門檻',
+  unit: '單位已變更', source: '門檻來源異常', 'source-unit': '門檻單位不符', range: '下限必須小於上限',
+};
 const dom = (tag, cls, text) => {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
@@ -45,6 +52,8 @@ const format = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 15 }
 const unitOf = state => state?.attributes?.unit_of_measurement ?? '';
 const nameOf = (item, states) => item.name || states?.[item.entity]?.attributes?.friendly_name || item.entity;
 const hasBounds = item => item.below != null || item.above != null;
+const numericState = raw => typeof raw === 'string' && DECIMAL.test(raw.trim()) ? Number(raw) : NaN;
+const withUnit = (value, unit) => `${format.format(value)}${unit ? ` ${unit}` : ''}`;
 
 function validate(config) {
   const items = config?.items ?? [];
@@ -53,20 +62,47 @@ function validate(config) {
     if (typeof item?.entity !== 'string' || !ENTITY_ID.test(item.entity)) throw new Error('請選擇有效的 sensor 實體。');
     if (item.kind != null && !KINDS.has(item.kind)) throw new Error('無效的感測類型。');
     for (const key of ['name', 'unit']) if (item[key] != null && typeof item[key] !== 'string') throw new Error(`${key} 必須是文字。`);
-    for (const key of ['below', 'above']) if (item[key] != null && !Number.isFinite(item[key])) throw new Error('門檻必須是有限數字。');
-    if (item.below != null && item.above != null && item.below >= item.above) throw new Error('下限必須小於上限。');
+    for (const key of ['below', 'above']) {
+      const bound = item[key];
+      if (bound != null && !Number.isFinite(bound) && !(typeof bound === 'string' && THRESHOLD_ID.test(bound))) {
+        throw new Error('門檻必須是有限數字或支援的數值實體 ID。');
+      }
+    }
+    if (Number.isFinite(item.below) && Number.isFinite(item.above) && item.below >= item.above) throw new Error('下限必須小於上限。');
   }
   return items;
 }
 
-function evaluate(item, state) {
-  const raw = state?.state;
+function resolveBound(configured, states, monitoredUnit) {
+  if (configured == null) return {};
+  if (typeof configured === 'number') return { value: configured, label: withUnit(configured, monitoredUnit) };
+  const source = states?.[configured];
+  const value = numericState(source?.state);
+  if (!Number.isFinite(value)) {
+    const reason = !source ? '找不到實體' : ['unknown', 'unavailable', ''].includes(source.state) ? '無讀值' : '不是有限數字';
+    return { issue: 'source', label: `${configured}：${reason}` };
+  }
+  const sourceUnit = unitOf(source);
+  // Unitless numeric helpers are intentional setpoints; sensors must match units.
+  const explicitUnit = sourceUnit !== '' || ENTITY_ID.test(configured);
+  const mismatch = monitoredUnit !== undefined && explicitUnit && sourceUnit !== monitoredUnit;
+  const label = `${configured} = ${withUnit(value, sourceUnit || (explicitUnit ? '' : monitoredUnit))}`;
+  return mismatch ? { issue: 'source-unit', label: `${label}（單位不符）` } : { value, label };
+}
+
+function evaluate(item, states) {
+  const state = states?.[item.entity];
   const unit = unitOf(state);
-  const value = typeof raw === 'string' && DECIMAL.test(raw.trim()) ? Number(raw) : NaN;
-  if (!Number.isFinite(value)) return ['unavailable', '—', ''];
-  const flag = !hasBounds(item) ? 'unset' : item.unit != null && item.unit !== unit ? 'unit' :
-    item.above != null && value > item.above ? 'high' : item.below != null && value < item.below ? 'low' : 'normal';
-  return [flag, format.format(value), unit];
+  const value = numericState(state?.state);
+  const usable = Number.isFinite(value);
+  const boundsUnit = item.unit ?? (state ? unit : undefined);
+  const below = resolveBound(item.below, states, boundsUnit);
+  const above = resolveBound(item.above, states, boundsUnit);
+  const bounds = [below.label && `下限 ${below.label}`, above.label && `上限 ${above.label}`].filter(Boolean).join(' · ');
+  const flag = !usable ? 'unavailable' : !hasBounds(item) ? 'unset' : item.unit != null && item.unit !== unit ? 'unit' :
+    below.issue ?? above.issue ?? (below.value >= above.value ? 'range' :
+      value > above.value ? 'high' : value < below.value ? 'low' : 'normal');
+  return [flag, usable ? format.format(value) : '—', usable ? unit : '', bounds];
 }
 
 const CARD_CSS = `
@@ -90,7 +126,7 @@ h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; 
 [data-state=high] :is(.status,.glyph) { background:#ffe6e1; color:#9e281b; }
 [data-state=low] { border-color:#77a9e8; }
 [data-state=low] :is(.status,.glyph) { background:#e5f0ff; color:#174f95; }
-:is([data-state=unavailable],[data-state=unit]) { border-style:dashed; }
+:is([data-state=unavailable],[data-state=unit],[data-state=source],[data-state=source-unit],[data-state=range]) { border-style:dashed; }
 [data-state=high] .glyph { animation:rise 1.5s ease-in-out infinite; }
 [data-state=low] .glyph { animation:fall 1.8s ease-in-out infinite; }
 @keyframes rise { 50% { transform:translateY(-3px) scale(1.06); } }
@@ -153,11 +189,11 @@ class EnvironmentThresholdCard extends HTMLElement {
 
   updateStates() {
     if (!this.rows) return;
-    const counts = { high: 0, low: 0, unavailable: 0, unit: 0, unset: 0 };
+    const counts = new Map();
     for (const { item, tile, path, name, value, unitNode, status, bounds } of this.rows) {
       const state = this.states?.[item.entity];
-      const [flag, reading, unit] = evaluate(item, state);
-      if (flag !== 'normal') counts[flag]++;
+      const [flag, reading, unit, configured] = evaluate(item, this.states);
+      counts.set(flag, (counts.get(flag) ?? 0) + 1);
       const kind = item.kind ?? DEVICE_KINDS.get(state?.attributes?.device_class) ?? 'custom';
       const shape = KINDS.get(kind)[1];
       if (path.getAttribute('d') !== shape) path.setAttribute('d', shape);
@@ -166,14 +202,13 @@ class EnvironmentThresholdCard extends HTMLElement {
       text(value, reading);
       text(unitNode, unit);
       text(status, STATUS[flag]);
-      const boundsUnit = item.unit ?? unitOf(state);
-      const configured = [item.below != null && `下限 ${format.format(item.below)}`, item.above != null && `上限 ${format.format(item.above)}`].filter(Boolean).join(' · ');
-      bounds.hidden = !configured;
-      text(bounds, configured && boundsUnit ? `${configured} ${boundsUnit}` : configured);
+      if (bounds.hidden === Boolean(configured)) bounds.hidden = !configured;
+      text(bounds, configured);
     }
-    const notices = Object.entries({ high: '過高', low: '過低', unavailable: '無讀值', unit: '單位已變更', unset: '未設門檻' })
-      .flatMap(([key, label]) => counts[key] ? [`${counts[key]} 項${label}`] : []);
-    this.summary.dataset.tone = counts.high || counts.low ? 'alarm' : notices.length ? 'warning' : 'normal';
+    const notices = ['high', 'low', 'unavailable', 'unit', 'source', 'source-unit', 'range', 'unset']
+      .flatMap(key => counts.has(key) ? [`${counts.get(key)} 項${{ high: '過高', low: '過低' }[key] ?? STATUS[key]}`] : []);
+    const tone = counts.has('high') || counts.has('low') ? 'alarm' : notices.length ? 'warning' : 'normal';
+    if (this.summary.dataset.tone !== tone) this.summary.dataset.tone = tone;
     text(this.summary, !this.rows.length ? '請在卡片編輯器新增監測項目。' : notices.join(' · ') || '所有監測皆在範圍內');
   }
 }
@@ -184,6 +219,8 @@ const EDITOR_CSS = `
 .list,.actions { display:flex; flex-wrap:wrap; gap:8px; margin-block:8px; }
 .fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr)); gap:8px; }
 label { display:grid; gap:4px; min-width:0; }
+.bound { display:grid; align-content:start; gap:4px; min-width:0; }
+ha-selector { display:block; min-width:0; }
 .full { grid-column:1/-1; }
 button,input,select { box-sizing:border-box; min-height:44px; font:inherit; color:inherit; background:var(--card-background-color,#fff); border:1px solid var(--divider-color,#a0aab2); border-radius:8px; padding:6px 9px; }
 input,select { width:100%; min-width:0; }
@@ -198,6 +235,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
     super();
     this.list = dom('div', 'list');
     this.form = dom('form');
+    this.form.tabIndex = -1;
     this.form.hidden = true;
     this.addButton = this.button('新增監測項目', () => this.openItem());
     this.attachShadow({ mode: 'open' }).append(style(EDITOR_CSS), this.list, this.form, this.addButton);
@@ -210,7 +248,17 @@ class EnvironmentThresholdEditor extends HTMLElement {
     this.closeItem();
   }
 
-  set hass(hass) { this.states = hass?.states; }
+  set hass(hass) {
+    this._hass = hass;
+    this.states = hass?.states;
+    const pickers = this.form.querySelectorAll('ha-selector');
+    const sources = this.form.querySelectorAll('ha-selector[data-bound]');
+    if (sources.length) {
+      const selector = this.thresholdSelector();
+      for (const picker of sources) if (picker.selector !== selector) picker.selector = selector;
+    }
+    for (const picker of pickers) picker.hass = hass;
+  }
 
   button(label, handler) {
     const button = dom('button', '', label);
@@ -225,6 +273,74 @@ class EnvironmentThresholdEditor extends HTMLElement {
     return wrapper;
   }
 
+  thresholdSelector() {
+    // HA offers Create Helper for domain-only filters. This editor only reads existing entities.
+    const ids = [...new Set([
+      ...Object.keys(this.states ?? {}), ...Object.keys(this._hass?.entities ?? {}),
+    ].filter(id => THRESHOLD_ID.test(id)))];
+    const previous = this._sourceSelector?.entity.include_entities;
+    if (!previous || previous.length !== ids.length || previous.some((id, i) => id !== ids[i])) {
+      this._sourceSelector = { entity: { filter: THRESHOLD_FILTER, include_entities: ids } };
+    }
+    return this._sourceSelector;
+  }
+
+  entityPicker(label, selector, idPattern, getValue, required, onChange) {
+    const picker = dom('ha-selector');
+    Object.assign(picker, { selector, label, value: getValue(), required, hass: this._hass });
+    picker.addEventListener('value-changed', event => {
+      event.stopPropagation();
+      if (!picker.isConnected || !this.form.contains(picker) ||
+          !event.detail || !Object.hasOwn(event.detail, 'value')) return;
+      const next = event.detail.value;
+      const cleared = next == null || next === '';
+      if (!picker.hidden && (cleared || (typeof next === 'string' && idPattern.test(next)))) {
+        const id = cleared ? undefined : next;
+        if (id !== getValue()) onChange(id);
+      } else {
+        // The native child sets its own value before firing. The wrapper may already hold
+        // the retained value, so assigning only .value on the wrapper need not roll it back.
+        const origin = event.composedPath()[0];
+        if (origin?.localName === 'ha-entity-picker') origin.value = getValue();
+      }
+      picker.value = getValue();
+    });
+    return picker;
+  }
+
+  boundField(key, title, initialValue, selector) {
+    const node = dom('div', 'bound');
+    const mode = dom('select');
+    mode.append(new Option('手動輸入', 'manual'), new Option('實體來源', 'entity'));
+    const input = dom('input');
+    input.type = 'number';
+    input.step = 'any';
+    input.placeholder = '留空＝不判斷';
+    let source = typeof initialValue === 'string' ? initialValue : undefined;
+    input.value = typeof initialValue === 'number' ? initialValue : '';
+    mode.value = source ? 'entity' : 'manual';
+    const picker = this.entityPicker(`${title}實體`, selector, THRESHOLD_ID, () => source, false, id => { source = id; });
+    picker.dataset.bound = key;
+    const manual = this.field(title, input);
+    const sync = () => {
+      picker.hidden = mode.value !== 'entity';
+      manual.hidden = input.disabled = !picker.hidden;
+    };
+    mode.addEventListener('change', sync);
+    node.append(this.field(`${title}來源`, mode), manual, picker);
+    sync();
+    return {
+      node,
+      value: () => mode.value === 'entity' ? source : input.value === '' ? undefined : input.valueAsNumber,
+      reset: () => {
+        source = picker.value = undefined;
+        input.value = '';
+        mode.value = 'manual';
+        sync();
+      },
+    };
+  }
+
   closeItem(returnTo) {
     this.form.hidden = true;
     this.form.replaceChildren();
@@ -236,35 +352,21 @@ class EnvironmentThresholdEditor extends HTMLElement {
 
   openItem(index) {
     const item = this.config.items[index];
-    const entity = dom('input');
-    entity.required = true;
-    entity.value = item?.entity ?? '';
-    entity.setAttribute('list', 'threshold-sensors');
-    entity.setAttribute('autocomplete', 'off');
-    const data = dom('datalist');
-    data.id = 'threshold-sensors';
-    for (const id of Object.keys(this.states ?? {}).filter(id => ENTITY_ID.test(id)).sort()) data.append(new Option(nameOf({ entity: id }, this.states), id));
+    let selectedEntity = item?.entity;
     const kind = dom('select');
     for (const [key, [label]] of KINDS) kind.append(new Option(label, key));
     const suggested = id => DEVICE_KINDS.get(this.states?.[id]?.attributes?.device_class) ?? 'custom';
-    kind.value = item?.kind ?? suggested(entity.value);
+    kind.value = item?.kind ?? suggested(selectedEntity);
     const label = dom('input');
     label.value = item?.name ?? '';
-    const below = dom('input');
-    const above = dom('input');
-    for (const input of [below, above]) {
-      input.type = 'number';
-      input.step = 'any';
-      input.placeholder = '留空＝不判斷';
-    }
-    below.value = item?.below ?? '';
-    above.value = item?.above ?? '';
+    const selector = this.thresholdSelector();
+    const below = this.boundField('below', '下限', item?.below, selector);
+    const above = this.boundField('above', '上限', item?.above, selector);
     const note = dom('div');
     const error = dom('p');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    let selectedEntity = entity.value;
-    const currentUnit = () => this.states?.[entity.value.trim()] ? unitOf(this.states[entity.value.trim()]) : undefined;
+    const currentUnit = () => this.states?.[selectedEntity] ? unitOf(this.states[selectedEntity]) : undefined;
     let draftUnit = currentUnit();
     const consent = dom('input');
     consent.type = 'checkbox';
@@ -278,21 +380,20 @@ class EnvironmentThresholdEditor extends HTMLElement {
         ? `門檻原單位：${item.unit || '無'}；目前單位：${draftUnit || '無'}。請重新換算門檻。`
         : `門檻單位：${draftUnit || '未提供'}（依實體單位）`);
     };
-    entity.addEventListener('change', () => {
-      const id = entity.value.trim();
-      if (id !== selectedEntity) {
-        selectedEntity = id;
-        draftUnit = currentUnit();
-        consent.checked = false;
-        below.value = above.value = '';
-        kind.value = suggested(id);
-        error.hidden = true;
-      }
+    const entity = this.entityPicker('感測器實體', MONITORED_SELECTOR, ENTITY_ID, () => selectedEntity, true, id => {
+      selectedEntity = id;
+      draftUnit = currentUnit();
+      consent.checked = false;
+      below.reset();
+      above.reset();
+      kind.value = suggested(id);
+      error.hidden = true;
       updateNote();
     });
+    entity.classList.add('full');
     updateNote();
     const fields = dom('div', 'fields');
-    fields.append(this.field('感測器實體', entity, 'full'), data, this.field('感測類型', kind), this.field('顯示名稱（選填）', label), this.field('下限', below), this.field('上限', above));
+    fields.append(entity, this.field('感測類型', kind), this.field('顯示名稱（選填）', label), below.node, above.node);
     const buttons = dom('div', 'actions');
     const apply = dom('button', 'primary', '套用項目');
     apply.type = 'submit';
@@ -303,12 +404,14 @@ class EnvironmentThresholdEditor extends HTMLElement {
     this.form.onsubmit = event => {
       event.preventDefault();
       const showError = message => { text(error, message); error.hidden = false; };
-      const updated = { entity: entity.value.trim(), kind: kind.value };
+      const updated = { entity: selectedEntity, kind: kind.value };
       if (label.value.trim()) updated.name = label.value.trim();
-      if (below.value !== '') updated.below = below.valueAsNumber;
-      if (above.value !== '') updated.above = above.valueAsNumber;
+      const lower = below.value();
+      const upper = above.value();
+      if (lower !== undefined) updated.below = lower;
+      if (upper !== undefined) updated.above = upper;
       if (hasBounds(updated)) {
-        if (updated.entity !== selectedEntity || draftUnit !== currentUnit()) {
+        if (draftUnit !== currentUnit()) {
           showError('感測器單位已變更，請取消後重新開啟項目。');
           return;
         }
@@ -331,7 +434,7 @@ class EnvironmentThresholdEditor extends HTMLElement {
     };
     this.form.hidden = false;
     this.addButton.hidden = true;
-    entity.focus();
+    this.form.focus();
   }
 
   commit(items, focusIndex) {
