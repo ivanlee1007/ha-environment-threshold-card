@@ -50,6 +50,26 @@ const style = css => dom('style', '', css);
 const text = (node, value) => { if (node.textContent !== value) node.textContent = value; };
 const format = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 15 });
 const unitOf = state => state?.attributes?.unit_of_measurement ?? '';
+const deviceClassOf = state => state?.attributes?.device_class;
+function normalizeUnit(unit, deviceClass) {
+  const trimmed = typeof unit === 'string' ? unit.trim() : unit;
+  return deviceClass === 'humidity' && /^%(?:h|rh)$/i.test(trimmed) ? '%' : trimmed;
+}
+const SPEED_CLASSES = new Set(['wind_speed', 'speed']);
+function convertSpeed(value, from, to, deviceClass, sourceClass) {
+  if (!SPEED_CLASSES.has(deviceClass) || (sourceClass && !SPEED_CLASSES.has(sourceClass))) return undefined;
+  return from === 'm/s' && to === 'km/h' ? value * 3.6 :
+    from === 'km/h' && to === 'm/s' ? value / 3.6 : undefined;
+}
+function compareValues(a, b, converted) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
+  if (a === b) return 0;
+  // A converted pair can be equal at the displayed precision or differ only by
+  // rounding in the binary inputs and the unit conversion. Leave raw pairs strict.
+  if (converted && (format.format(a) === format.format(b) ||
+      Math.abs(a - b) <= 2 * Number.EPSILON * Math.max(Math.abs(a), Math.abs(b)))) return 0;
+  return a < b ? -1 : 1;
+}
 const nameOf = (item, states) => item.name || states?.[item.entity]?.attributes?.friendly_name || item.entity;
 const hasBounds = item => item.below != null || item.above != null;
 const numericState = raw => typeof raw === 'string' && DECIMAL.test(raw.trim()) ? Number(raw) : NaN;
@@ -73,7 +93,7 @@ function validate(config) {
   return items;
 }
 
-function resolveBound(configured, states, monitoredUnit) {
+function resolveBound(configured, states, monitoredUnit, deviceClass) {
   if (configured == null) return {};
   if (typeof configured === 'number') return { value: configured, label: withUnit(configured, monitoredUnit) };
   const source = states?.[configured];
@@ -82,26 +102,33 @@ function resolveBound(configured, states, monitoredUnit) {
     const reason = !source ? '找不到實體' : ['unknown', 'unavailable', ''].includes(source.state) ? '無讀值' : '不是有限數字';
     return { issue: 'source', label: `${configured}：${reason}` };
   }
-  const sourceUnit = unitOf(source);
+  const sourceClass = deviceClassOf(source);
+  const aliasClass = deviceClass === 'humidity' && (!sourceClass || sourceClass === 'humidity') ? deviceClass : undefined;
+  const sourceUnit = normalizeUnit(unitOf(source), aliasClass);
   // Unitless numeric helpers are intentional setpoints; sensors must match units.
   const explicitUnit = sourceUnit !== '' || ENTITY_ID.test(configured);
-  const mismatch = monitoredUnit !== undefined && explicitUnit && sourceUnit !== monitoredUnit;
   const label = `${configured} = ${withUnit(value, sourceUnit || (explicitUnit ? '' : monitoredUnit))}`;
-  return mismatch ? { issue: 'source-unit', label: `${label}（單位不符）` } : { value, label };
+  if (monitoredUnit === undefined || !explicitUnit || sourceUnit === monitoredUnit) return { value, label };
+  const converted = convertSpeed(value, sourceUnit, monitoredUnit, deviceClass, sourceClass);
+  if (converted === undefined) return { issue: 'source-unit', label: `${label}（單位不符）` };
+  if (!Number.isFinite(converted) || (value !== 0 && converted === 0)) return { issue: 'source', label: `${label}（換算結果無效）` };
+  return { value: converted, converted: true, label: `${label} → ${withUnit(converted, monitoredUnit)}` };
 }
 
 function evaluate(item, states) {
   const state = states?.[item.entity];
-  const unit = unitOf(state);
+  const deviceClass = deviceClassOf(state);
+  const unit = normalizeUnit(unitOf(state), deviceClass);
   const value = numericState(state?.state);
   const usable = Number.isFinite(value);
-  const boundsUnit = item.unit ?? (state ? unit : undefined);
-  const below = resolveBound(item.below, states, boundsUnit);
-  const above = resolveBound(item.above, states, boundsUnit);
+  const boundsUnit = item.unit != null ? normalizeUnit(item.unit, deviceClass) : (state ? unit : undefined);
+  const below = resolveBound(item.below, states, boundsUnit, deviceClass);
+  const above = resolveBound(item.above, states, boundsUnit, deviceClass);
   const bounds = [below.label && `下限 ${below.label}`, above.label && `上限 ${above.label}`].filter(Boolean).join(' · ');
-  const flag = !usable ? 'unavailable' : !hasBounds(item) ? 'unset' : item.unit != null && item.unit !== unit ? 'unit' :
-    below.issue ?? above.issue ?? (below.value >= above.value ? 'range' :
-      value > above.value ? 'high' : value < below.value ? 'low' : 'normal');
+  const flag = !usable ? 'unavailable' : !hasBounds(item) ? 'unset' : item.unit != null && boundsUnit !== unit ? 'unit' :
+    below.issue ?? above.issue ?? (compareValues(below.value, above.value, below.converted || above.converted) >= 0 ? 'range' :
+      compareValues(value, above.value, above.converted) > 0 ? 'high' :
+        compareValues(value, below.value, below.converted) < 0 ? 'low' : 'normal');
   return [flag, usable ? format.format(value) : '—', usable ? unit : '', bounds];
 }
 
@@ -366,14 +393,18 @@ class EnvironmentThresholdEditor extends HTMLElement {
     const error = dom('p');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    const currentUnit = () => this.states?.[selectedEntity] ? unitOf(this.states[selectedEntity]) : undefined;
+    const currentState = () => this.states?.[selectedEntity];
+    const currentUnit = () => {
+      const state = currentState();
+      return state ? normalizeUnit(unitOf(state), deviceClassOf(state)) : undefined;
+    };
     let draftUnit = currentUnit();
     const consent = dom('input');
     consent.type = 'checkbox';
     consent.style.width = 'auto';
     consent.style.minHeight = 'auto';
     const consentField = this.field('已確認門檻使用目前單位', consent);
-    const needsConsent = () => item?.unit != null && item.entity === selectedEntity && hasBounds(item) && draftUnit !== undefined && item.unit !== draftUnit;
+    const needsConsent = () => item?.unit != null && item.entity === selectedEntity && hasBounds(item) && draftUnit !== undefined && normalizeUnit(item.unit, deviceClassOf(currentState())) !== draftUnit;
     const updateNote = () => {
       consentField.hidden = !needsConsent();
       text(note, needsConsent()

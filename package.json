@@ -1,12 +1,16 @@
 {
   "name": "ha-environment-threshold-card",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "check": "node --check environment-threshold-card.js",
     "test": "playwright test"
   },
-  "devDependencies": { "@playwright/test": "1.65.1" }
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
 }

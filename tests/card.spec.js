@@ -401,6 +401,23 @@ test('does not visually resave an unguarded YAML threshold for an absent sensor'
   await expect(page.getByRole('alert')).toBeVisible();
 });
 
+test('editor does not require unit-change consent for humidity aliases and whitespace', async ({ page }) => {
+  await page.evaluate(tag => {
+    window.fixture['sensor.test_0'] = { state: '55', attributes: { device_class: 'humidity', unit_of_measurement: ' % ' } };
+    window.emits = [];
+    window.editor = window.mount(`${tag}-editor`, [{ entity: 'sensor.test_0', above: 70, unit: '%H' }]);
+    window.editor.addEventListener('config-changed', e => window.emits.push(e.detail.config));
+  }, cardTag);
+  await page.getByRole('button', { name: 'sensor.test_0' }).click();
+  await expect(page.getByLabel('已確認門檻使用目前單位')).toBeHidden();
+  await page.evaluate(() => {
+    window.fixture['sensor.test_0'].attributes.unit_of_measurement = '%RH';
+    window.editor.hass = { states: window.fixture };
+  });
+  await page.getByRole('button', { name: '套用項目' }).click();
+  expect(await page.evaluate(() => window.emits.at(-1)?.items[0])).toMatchObject({ above: 70, unit: '%' });
+});
+
 test('does not save a threshold entered under a different live unit', async ({ page }) => {
   await page.evaluate(tag => {
     window.emits = [];
