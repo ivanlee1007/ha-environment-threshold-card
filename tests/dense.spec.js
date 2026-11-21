@@ -136,6 +136,17 @@ for (const theme of ['light', 'dark']) {
   });
 }
 
+test('dense summary keeps full labels at the measured Jingan width when they fit', async ({ page }) => {
+  await page.evaluate(() => {
+    window.card.parentElement.style.width = '379.65625px';
+    window.card.setConfig({ display_mode: 'dense', items: [
+      { entity: 'sensor.dense_0' }, { entity: 'sensor.dense_1' },
+      { entity: 'sensor.dense_2', above: 30 }, { entity: 'sensor.dense_3', above: 10 },
+    ] });
+  });
+  await expect(page.locator('.dense-summary')).toContainText('未設門檻', { useInnerText: true });
+});
+
 test('summary adapts to wider glyph advances and restores full labels when there is room', async ({ page }) => {
   const summary = page.locator('.dense-summary');
   const names = ['過高 1', '過低 1', '門檻異常 1', '正常 1', '未設門檻 9'];
@@ -412,7 +423,7 @@ for (const theme of ['light', 'dark']) {
     expect(await card.evaluate(el => el.getCardSize())).toBe(16);
 
     const resize = width => card.evaluate((el, width) => { el.parentElement.style.width = `${width}px`; }, width);
-    for (const [width, columns] of [[300, 1], [960, 6], [300, 1]]) {
+    for (const [width, columns] of [[300, 2], [960, 6], [300, 2]]) {
       await resize(width);
       const geometry = await card.evaluate(el => {
         const root = el.shadowRoot;

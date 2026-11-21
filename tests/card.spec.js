@@ -213,7 +213,7 @@ test('tile keeps a converted threshold beside a failed source', async ({ page })
     window.mount(tag, [{ entity: 'sensor.wind', below: 'number.missing', above: 'sensor.wind_limit' }]);
   }, cardTag);
   await expect(page.locator('.tile .status')).toHaveText('門檻來源異常');
-  await expect(page.locator('.tile .bounds')).toHaveText('下限：找不到實體 · 上限 18 km/h');
+  await expect(page.locator('.tile .bounds')).toHaveText('下限：找不到實體 · 上限 5 m/s');
   expect(await page.locator('.tile').evaluate(tile => tile.outerHTML)).not.toMatch(/number\.missing|sensor\.wind_limit/);
 });
 
@@ -601,7 +601,7 @@ test('editor provenance follows a late YAML sensor without rebinding the open dr
     window.fixture['sensor.wind'] = { state: '20', attributes: { device_class: 'wind_speed', unit_of_measurement: 'km/h' } };
     window.card.hass = window.editor.hass = { states: { ...window.fixture } };
   });
-  await expect(page.locator('.tile .bounds')).toHaveText('上限 18 km/h');
+  await expect(page.locator('.tile .bounds')).toHaveText('上限 5 m/s');
   await expect(page.locator('.tile .status')).toHaveText('↑ 高於上限');
   await expect(detail).toHaveText('sensor.wind_limit = 5 m/s → 18 km/h');
   const apply = page.getByRole('button', { name: '套用項目' });
@@ -626,7 +626,7 @@ test('editor provenance uses the saved evaluation unit while consent uses the li
   }, cardTag);
   await page.getByRole('button', { name: 'sensor.wind' }).click();
   await expect(page.locator('.tile .status')).toHaveText('單位已變更');
-  await expect(page.locator('.tile .bounds')).toHaveText('上限 18 km/h');
+  await expect(page.locator('.tile .bounds')).toHaveText('上限 5 m/s');
   await expect(page.getByLabel('已確認門檻使用目前單位')).toBeVisible();
   await expect(page.locator('.source-detail:visible')).toHaveText('sensor.wind_limit = 5 m/s → 18 km/h');
 });

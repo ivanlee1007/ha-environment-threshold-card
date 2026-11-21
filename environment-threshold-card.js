@@ -91,13 +91,36 @@ function sameConfigData(a, b) {
   return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && sameConfigData(a[key], b[key]));
 }
 
-function describeBounds(below, above, unit, flag) {
-  const sides = [['下限', below], ['上限', above]];
-  if (below.value !== undefined && above.value !== undefined && !below.rawUnit && !above.rawUnit && flag !== 'range') {
-    return `${format.format(below.value)}–${format.format(above.value)}${compactUnit(unit)}`;
+// This allowlist belongs to presentation only. Do not use it to resolve or compare thresholds.
+function displayMeasurement(value, unit, deviceClass) {
+  if (typeof unit !== 'string') return { value, unit: '' };
+  if (value === undefined) return { value, unit };
+  if (deviceClass === 'wind_speed' && unit === 'km/h') {
+    const converted = value / 3.6;
+    if (converted !== 0 || value === 0) return { value: converted, unit: 'm/s' };
   }
-  return sides.flatMap(([side, bound]) => bound.reason ? [`${side}：${bound.reason}`] : bound.value === undefined ? [] :
-    [`${side} ${format.format(bound.value)}${compactUnit(bound.rawUnit ?? unit)}`]).join(' · ');
+  if (deviceClass === 'temperature') {
+    if (unit === '℃') return { value, unit: '°C' };
+    if (unit === '°F') return { value: (value - 32) / 1.8, unit: '°C' };
+    if (unit === 'K') return { value: value - 273.15, unit: '°C' };
+  }
+  if (deviceClass === 'illuminance' && (unit === 'lx' || /^lux$/i.test(unit))) return { value, unit: 'lx' };
+  // Relative humidity is already normalized by the narrower evaluation rules.
+  return { value, unit };
+}
+
+function describeBounds(below, above, unit, flag, deviceClass) {
+  const project = bound => bound.rawUnit === undefined ? displayMeasurement(bound.value, unit, deviceClass) :
+    { value: bound.value, unit: bound.rawUnit };
+  const lower = project(below);
+  const upper = project(above);
+  if (lower.value !== undefined && upper.value !== undefined && !below.rawUnit && !above.rawUnit &&
+      lower.unit === upper.unit && flag !== 'range') {
+    return `${format.format(lower.value)}–${format.format(upper.value)}${compactUnit(lower.unit)}`;
+  }
+  return [['下限', below, lower], ['上限', above, upper]].flatMap(([side, bound, shown]) =>
+    bound.reason ? [`${side}：${bound.reason}`] : shown.value === undefined ? [] :
+      [`${side} ${format.format(shown.value)}${compactUnit(shown.unit)}`]).join(' · ');
 }
 
 function validate(config) {
@@ -167,30 +190,37 @@ function evaluate(item, states) {
     below.issue ?? above.issue ?? (compareValues(below.value, above.value, below.converted || above.converted) >= 0 ? 'range' :
       compareValues(value, above.value, above.converted) > 0 ? 'high' :
         compareValues(value, below.value, below.converted) < 0 ? 'low' : 'normal');
-  return [flag, usable ? format.format(value) : '—', usable ? unit : '', describeBounds(below, above, boundsUnit, flag)];
+  return {
+    flag, reading: usable ? displayMeasurement(value, unit, deviceClass) : { value: undefined, unit: '' },
+    bounds: describeBounds(below, above, boundsUnit, flag, deviceClass),
+  };
 }
 
 const CARD_CSS = `
 :host { display:block; min-inline-size:0; color:var(--primary-text-color,#20313d); }
 ha-card { display:block; box-sizing:border-box; height:auto; padding:12px; border:1px solid var(--ha-card-border-color,#d9e3ea); border-radius:var(--ha-card-border-radius,12px); background:var(--ha-card-background,var(--card-background-color,#fff)); }
+.standard-card { container:standard-card / inline-size; }
 h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; }
 .summary { margin:0 0 8px; padding:6px 9px; border-radius:8px; font-weight:600; background:var(--secondary-background-color,#edf3f6); }
 .summary[data-tone=alarm] { border-inline-start:4px solid #d44731; background:color-mix(in srgb,#d44731 13%,transparent); }
 .summary[data-tone=warning] { border-inline-start:4px solid #78909c; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,138px),1fr)); gap:8px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,138px),1fr)); gap:6px; }
+/* Three compact tracks need 342px of inner space; keep roomier tracks on wider cards. */
+@container standard-card (width < 426px) { .grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,110px),1fr)); } }
 .standard-section + .standard-section { margin-block-start:12px; }
 .standard-section h3 { display:flex; align-items:baseline; gap:8px; margin:0 0 6px; font-size:1em; overflow-wrap:anywhere; }
 .standard-section-count { flex:none; color:var(--secondary-text-color,#4d5965); font-size:.85em; font-weight:400; white-space:nowrap; }
 .standard-section-empty { margin:0; color:var(--secondary-text-color,#4d5965); font-size:.85em; }
 .standard-section .grid[hidden] { display:none; }
-.tile { min-inline-size:0; display:grid; grid-template-columns:30px minmax(0,1fr); gap:7px; align-items:start; padding:8px; border-radius:10px; border:1px solid var(--divider-color,#d9e3ea); overflow-wrap:anywhere; }
-.glyph { width:30px; height:30px; display:grid; place-items:center; background:var(--secondary-background-color,#edf3f6); border-radius:8px; }
-.glyph svg { width:21px; height:21px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-.name { font-weight:650; }
-.reading { font-size:1.35em; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.25; }
-.reading small { font-size:.62em; margin-inline-start:.27em; }
-.status { display:inline-block; font-size:.8em; margin-top:3px; padding:1px 5px; border-radius:5px; background:var(--secondary-background-color,#edf3f6); }
-.bounds { display:block; margin-top:4px; font-size:.78em; color:var(--secondary-text-color,#4d5965); }
+.tile { min-inline-size:0; display:grid; grid-template-columns:20px minmax(0,1fr); gap:2px 5px; align-content:start; align-items:center; padding:5px 6px; border-radius:10px; border:1px solid var(--divider-color,#d9e3ea); overflow-wrap:anywhere; }
+.glyph { width:20px; height:20px; display:grid; place-items:center; background:var(--secondary-background-color,#edf3f6); border-radius:5px; }
+.glyph svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.name { min-inline-size:0; font-weight:650; line-height:1.25; }
+.tile-body { grid-column:1/-1; min-inline-size:0; line-height:1.3; }
+.reading { display:flex; flex-wrap:wrap; align-items:baseline; column-gap:.18em; font-size:1.3em; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2; }
+.reading small { font-size:.65em; }
+.status { display:inline-block; font-size:.8em; padding:1px 4px; border-radius:5px; background:var(--secondary-background-color,#edf3f6); }
+.bounds { display:block; margin-top:1px; font-size:.8em; color:var(--secondary-text-color,#4d5965); }
 .bounds[hidden] { display:none; }
 [data-state=high] { border-color:#ed8d83; }
 [data-state=high] :is(.status,.glyph) { background:#ffe6e1; color:#9e281b; }
@@ -213,7 +243,7 @@ function tileNodes() {
   const path = document.createElementNS(svg.namespaceURI, 'path');
   svg.append(path);
   glyph.append(svg);
-  const body = dom('div');
+  const body = dom('div', 'tile-body');
   const name = dom('div', 'name');
   const reading = dom('div', 'reading');
   const value = dom('span');
@@ -221,8 +251,8 @@ function tileNodes() {
   const status = dom('span', 'status');
   const bounds = dom('small', 'bounds');
   reading.append(value, unitNode);
-  body.append(name, reading, status, bounds);
-  tile.append(glyph, body);
+  body.append(reading, status, bounds);
+  tile.append(glyph, name, body);
   return { tile, path, name, value, unitNode, status, bounds };
 }
 
@@ -534,10 +564,11 @@ class DenseDisplay {
     for (const row of this.rows) {
       const { item, tile, path, name, mark, value, unit } = row;
       const state = states?.[item.entity];
-      const [flag, formatted, rawUnit, bounds] = evaluate(item, states);
+      const { flag, reading, bounds } = evaluate(item, states);
       const tone = denseTone(flag);
-      const unitText = publicLabel(rawUnit);
-      const numeric = formatted.length > 23 ? scientific.format(numericState(state?.state)) : formatted;
+      const unitText = publicLabel(reading.unit);
+      const formatted = reading.value === undefined ? '—' : format.format(reading.value);
+      const numeric = formatted.length > 23 ? scientific.format(reading.value) : formatted;
       const label = publicLabel(item.name) || publicLabel(state?.attributes?.friendly_name, '感測器');
       row.flag = flag;
       row.tone = tone;
@@ -608,7 +639,7 @@ class EnvironmentThresholdCard extends HTMLElement {
 
   constructor() {
     super();
-    const panel = dom('ha-card');
+    const panel = dom('ha-card', 'standard-card');
     this.panel = panel;
     this.titleNode = dom('h2');
     this.summary = dom('p', 'summary');
@@ -707,15 +738,15 @@ class EnvironmentThresholdCard extends HTMLElement {
     const counts = new Map();
     for (const { item, tile, path, name, value, unitNode, status, bounds } of this.rows) {
       const state = this.states?.[item.entity];
-      const [flag, reading, unit, configured] = evaluate(item, this.states);
+      const { flag, reading, bounds: configured } = evaluate(item, this.states);
       counts.set(flag, (counts.get(flag) ?? 0) + 1);
       const kind = item.kind ?? DEVICE_KINDS.get(state?.attributes?.device_class) ?? 'custom';
       const shape = KINDS.get(kind)[1];
       if (path.getAttribute('d') !== shape) path.setAttribute('d', shape);
       if (tile.dataset.state !== flag) tile.dataset.state = flag;
       text(name, nameOf(item, this.states));
-      text(value, reading);
-      text(unitNode, unit);
+      text(value, reading.value === undefined ? '—' : format.format(reading.value));
+      text(unitNode, reading.unit);
       text(status, STATUS[flag]);
       if (bounds.hidden === Boolean(configured)) bounds.hidden = !configured;
       text(bounds, configured);

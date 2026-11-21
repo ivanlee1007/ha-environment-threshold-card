@@ -39,7 +39,7 @@ test('the diagnosed temperature, relative humidity and wind-speed configurations
     'input_number.wind_high': reading(5, 'm/s'),
   });
   await expect(page.locator('.status')).toHaveText(['正常', '正常', '正常']);
-  await expect(page.locator('.bounds')).toHaveText(['20–25 °C', '上限 80%', '上限 18 km/h']);
+  await expect(page.locator('.bounds')).toHaveText(['20–25 °C', '上限 80%', '上限 5 m/s']);
   await page.evaluate(() => window.openDetails(2));
   await expect(page.getByText('input_number.wind_high = 5 m/s → 18 km/h', { exact: true })).toBeVisible();
   await expect(page.locator('.summary')).toHaveText('所有監測皆在範圍內');
