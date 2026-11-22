@@ -413,7 +413,10 @@ for (const theme of ['light', 'dark']) {
     await expect(sections.nth(3).locator('.name')).toHaveText(['手動未分組', '舊段落項目']);
     await expect(card.locator('.tile')).toHaveCount(9);
     await expect(card.locator('.dense-grid')).toHaveCount(0);
-    await expect(card.getByRole('button')).toHaveCount(0);
+    await expect(card.getByRole('button')).toHaveCount(2);
+    for (const name of ['只看異常', '密集模式']) {
+      await expect(card.getByRole('button', { name, exact: true })).toHaveAttribute('aria-pressed', 'false');
+    }
     const low = sections.nth(1).locator('.tile').first();
     await expect(low.locator('svg')).toBeVisible();
     await expect(low.locator('.reading')).toHaveText('14.7°C');

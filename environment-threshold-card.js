@@ -199,8 +199,17 @@ function evaluate(item, states) {
 const CARD_CSS = `
 :host { display:block; min-inline-size:0; color:var(--primary-text-color,#20313d); }
 ha-card { display:block; box-sizing:border-box; height:auto; padding:12px; border:1px solid var(--ha-card-border-color,#d9e3ea); border-radius:var(--ha-card-border-radius,12px); background:var(--ha-card-background,var(--card-background-color,#fff)); }
+ha-card [hidden] { display:none !important; }
 .standard-card { container:standard-card / inline-size; }
-h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; }
+.card-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 6px; }
+.standard-card .card-head { margin-block-end:8px; }
+.card-head h2 { flex:1 1 auto; min-inline-size:0; margin:0; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; }
+.card-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; min-inline-size:0; margin-inline-start:auto; }
+.card-toggle { font:inherit; font-size:11px; line-height:1.4; min-height:26px; padding:2px 6px;
+  border:1px solid var(--divider-color,var(--edge,#cfdbe0)); border-radius:6px; color:inherit;
+  background:var(--tile,var(--secondary-background-color,transparent)); cursor:pointer; }
+.card-toggle[aria-pressed=true] { color:#0c5a55; border-color:#4a9e90; background:#ddf4ee; }
+.card-toggle:focus-visible { outline:2px solid var(--primary-color,#179785); outline-offset:1px; z-index:1; }
 .summary { margin:0 0 8px; padding:6px 9px; border-radius:8px; font-weight:600; background:var(--secondary-background-color,#edf3f6); }
 .summary[data-tone=alarm] { border-inline-start:4px solid #d44731; background:color-mix(in srgb,#d44731 13%,transparent); }
 .summary[data-tone=warning] { border-inline-start:4px solid #78909c; }
@@ -211,7 +220,7 @@ h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; 
 .standard-section h3 { display:flex; align-items:baseline; gap:8px; margin:0 0 6px; font-size:1em; overflow-wrap:anywhere; }
 .standard-section-count { flex:none; color:var(--secondary-text-color,#4d5965); font-size:.85em; font-weight:400; white-space:nowrap; }
 .standard-section-empty { margin:0; color:var(--secondary-text-color,#4d5965); font-size:.85em; }
-.standard-section .grid[hidden] { display:none; }
+
 .tile { min-inline-size:0; display:grid; grid-template-columns:20px minmax(0,1fr); gap:2px 5px; align-content:start; align-items:center; padding:5px 6px; border-radius:10px; border:1px solid var(--divider-color,#d9e3ea); overflow-wrap:anywhere; }
 .glyph { width:20px; height:20px; display:grid; place-items:center; background:var(--secondary-background-color,#edf3f6); border-radius:5px; }
 .glyph svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
@@ -221,7 +230,7 @@ h2 { margin:0 0 8px; font-size:1.22em; line-height:1.3; overflow-wrap:anywhere; 
 .reading small { font-size:.65em; }
 .status { display:inline-block; font-size:.8em; padding:1px 4px; border-radius:5px; background:var(--secondary-background-color,#edf3f6); }
 .bounds { display:block; margin-top:1px; font-size:.8em; color:var(--secondary-text-color,#4d5965); }
-.bounds[hidden] { display:none; }
+
 [data-state=high] { border-color:#ed8d83; }
 [data-state=high] :is(.status,.glyph) { background:#ffe6e1; color:#9e281b; }
 [data-state=low] { border-color:#77a9e8; }
@@ -269,7 +278,7 @@ function standardSectionNodes() {
 }
 
 const DENSE_CSS = `
-.dense-shell[hidden], .dense-shell [hidden] { display:none !important; }
+
 .dense-shell { container-type:inline-size; }
 .dense-card { --bg:#f8fafb; --tile:#fff; --edge:#cfdbe0; --ink:#162630; --dim:#435e69; padding:10px;
   border-color:var(--ha-card-border-color,var(--edge)); background:var(--ha-card-background,var(--card-background-color,var(--bg)));
@@ -278,11 +287,7 @@ const DENSE_CSS = `
 @media (prefers-color-scheme:dark) {
   .dense-card:not([data-theme]) { --bg:#131c22; --tile:#1c2932; --edge:#364751; --ink:#f2f8fa; --dim:#b4c7cf; }
 }
-.dense-head { display:flex; align-items:center; justify-content:space-between; gap:6px; }
-.dense-head h2 { margin:0; font-size:16px; letter-spacing:.02em; min-inline-size:0; }
-.dense-filter { flex:none; font:inherit; font-size:11px; line-height:1.4; min-height:26px; padding:2px 6px;
-  border:1px solid var(--divider-color,var(--edge)); border-radius:6px; color:inherit; background:var(--tile); cursor:pointer; }
-.dense-filter[aria-pressed=true] { color:#0c5a55; border-color:#4a9e90; background:#ddf4ee; }
+.dense-card .card-head h2 { font-size:16px; line-height:inherit; letter-spacing:.02em; }
 .dense-summary { display:flex; align-items:center; gap:5px; box-sizing:border-box; min-height:28px; margin:3px 0 0;
   padding:5px 0; border-block-end:1px solid var(--divider-color,var(--edge)); font-size:11px; line-height:1.4; white-space:nowrap; }
 .dense-summary > span { flex:none; color:var(--secondary-text-color,var(--dim)); }
@@ -311,7 +316,7 @@ const DENSE_CSS = `
   color:var(--alert-ink,var(--primary-text-color,var(--ink))); background:var(--fill,var(--tile)); font:inherit; cursor:pointer; }
 .dense-tile:is([data-tone=issue],[data-tone=unavailable]) { border-style:dashed; }
 .dense-tile[aria-expanded=true] { box-shadow:inset 0 0 0 1px var(--alert-ink,var(--dim)); }
-.dense-tile:focus-visible, .dense-filter:focus-visible { outline:2px solid var(--primary-color,#179785); outline-offset:1px; z-index:1; }
+.dense-tile:focus-visible { outline:2px solid var(--primary-color,#179785); outline-offset:1px; z-index:1; }
 .dense-label { display:inline-flex; align-items:center; gap:3px; max-width:100%; line-height:1.25; font-size:11px;
   color:var(--alert-ink,var(--secondary-text-color,var(--dim))); }
 .dense-label svg { width:13px; height:13px; flex:none; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
@@ -357,7 +362,7 @@ const DENSE_LEGEND = [
 ];
 const denseSymbols = new Map(DENSE_LEGEND.map(([key, mark]) => [key, mark]));
 const denseTone = flag => denseSymbols.has(flag) ? flag : 'issue';
-const denseProblem = tone => tone !== 'normal' && tone !== 'unset';
+const isAbnormal = flag => flag !== 'normal' && flag !== 'unset';
 const scientific = new Intl.NumberFormat(undefined, { notation: 'scientific', maximumSignificantDigits: 15 });
 // Don't fall back to IDs, or echo sensor/threshold IDs supplied as display metadata.
 const publicLabel = (label, fallback = '') => typeof label === 'string'
@@ -380,23 +385,11 @@ function reconcileChildren(parent, nodes) {
 }
 
 class DenseDisplay {
-  constructor(root) {
+  constructor(root, filter) {
     this.root = root;
+    this.filter = filter;
     this.sections = new Map();
     this.rows = [];
-    this.filter = dom('button', 'dense-filter', '只看異常');
-    this.filter.type = 'button';
-    this.filter.setAttribute('aria-pressed', 'false');
-    this.filter.onclick = () => {
-      this.onlyIssues = !this.onlyIssues;
-      this.filter.setAttribute('aria-pressed', String(this.onlyIssues));
-      this.updateVisibility();
-    };
-    this.shell = dom('div', 'dense-shell');
-    this.panel = dom('ha-card', 'dense-card');
-    this.title = dom('h2');
-    const head = dom('div', 'dense-head');
-    head.append(this.title, this.filter);
     this.summary = dom('div', 'dense-summary');
     this.summary.setAttribute('role', 'status');
     this.badges = DENSE_LEGEND.map(([tone, mark, label, short]) => {
@@ -426,9 +419,7 @@ class DenseDisplay {
     this.detailTitle = dom('strong');
     this.detailBody = dom('span');
     this.detail.append(this.detailTitle, this.detailBody);
-    this.panel.append(head, this.summary, this.content, this.empty, this.detail);
-    this.shell.append(this.panel);
-    root.append(style(DENSE_CSS), this.shell);
+    this.nodes = [this.summary, this.content, this.empty, this.detail];
   }
 
   observeSummary() {
@@ -445,7 +436,7 @@ class DenseDisplay {
 
   fitSummary() {
     const row = this.summary;
-    if (!row.isConnected || this.shell.hidden) return;
+    if (!row.isConnected) return;
     const { left, right, width } = row.getBoundingClientRect();
     if (!width) return;
     // The total is the last nonshrinking item, so it defines the end of the row.
@@ -485,7 +476,7 @@ class DenseDisplay {
     tile.append(label, reading);
     const row = { tile, path, name, reading, mark, value, unit };
     tile.onclick = () => {
-      if (!tile.hidden && tile.isConnected && !this.shell.hidden) this.showDetail(this.open === row ? undefined : row);
+      if (!tile.hidden && tile.isConnected) this.showDetail(this.open === row ? undefined : row);
     };
     return row;
   }
@@ -519,9 +510,21 @@ class DenseDisplay {
     });
   }
 
-  updateConfig(config, items, states, dark) {
+  reconcileInactiveSelection(previousItems, items) {
+    if (!this.open || sameConfigData(previousItems, items)) return;
+    // Check each config transition without updating the detached dense body.
+    const matchesOpen = item => denseItemKey(item) === this.open.key;
+    if (previousItems.filter(matchesOpen).length !== 1 || items.filter(matchesOpen).length !== 1) {
+      this.open = undefined;
+    }
+  }
+
+  pruneInactiveSelection(states, onlyIssues) {
+    if (onlyIssues && this.open && !isAbnormal(evaluate(this.open.item, states).flag)) this.open = undefined;
+  }
+
+  updateConfig(config, items, states, onlyIssues) {
     const active = this.root.activeElement;
-    text(this.title, publicLabel(config.title, DEFAULT_TITLE));
     const sections = new Map();
     for (const section of config.sections ?? []) {
       const view = this.sections.get(section.id) ?? this.createSection();
@@ -550,16 +553,14 @@ class DenseDisplay {
     this.sections = sections;
     reconcileChildren(this.content, [...sections.values()].map(section => section.node));
     for (const section of sections.values()) reconcileChildren(section.grid, section.rows.map(row => row.tile));
-    this.update(states, dark);
+    this.update(states, onlyIssues);
     if (active?.classList.contains('dense-tile') && this.root.activeElement !== active) {
       const target = active.isConnected && !active.closest('[hidden]') ? active : this.filter;
       target.focus({ preventScroll: true });
     }
   }
 
-  update(states, dark) {
-    if (typeof dark === 'boolean') setAttr(this.panel, 'data-theme', dark ? 'dark' : 'light');
-    else if (this.panel.hasAttribute('data-theme')) this.panel.removeAttribute('data-theme');
+  update(states, onlyIssues) {
     const counts = new Map();
     for (const row of this.rows) {
       const { item, tile, path, name, mark, value, unit } = row;
@@ -571,7 +572,7 @@ class DenseDisplay {
       const numeric = formatted.length > 23 ? scientific.format(reading.value) : formatted;
       const label = publicLabel(item.name) || publicLabel(state?.attributes?.friendly_name, '感測器');
       row.flag = flag;
-      row.tone = tone;
+
       row.bounds = publicLabel(bounds);
       counts.set(tone, (counts.get(tone) ?? 0) + 1);
       setAttr(tile, 'data-tone', tone);
@@ -593,21 +594,21 @@ class DenseDisplay {
       text(count, ` ${n}`);
     }
     text(this.total, `共 ${this.rows.length} 項`);
-    this.updateVisibility();
+    this.updateVisibility(onlyIssues);
   }
 
-  updateVisibility() {
+  updateVisibility(onlyIssues) {
     const active = this.root.activeElement;
     let any = false;
     const layouts = [];
     for (const { node, rows, grid, count, empty } of this.sections.values()) {
-      const shown = this.onlyIssues ? rows.filter(row => denseProblem(row.tone)) : rows;
+      const shown = onlyIssues ? rows.filter(row => isAbnormal(row.flag)) : rows;
       const visible = new Set(shown);
-      hide(node, Boolean(this.onlyIssues && !shown.length));
+      hide(node, onlyIssues && !shown.length);
       hide(grid, !shown.length);
       hide(empty, Boolean(shown.length));
       text(empty, shown.length ? '' : '尚未加入監測項目');
-      text(count, `${shown.length}${this.onlyIssues ? ` / ${rows.length}` : ''} 項`);
+      text(count, `${shown.length}${onlyIssues ? ` / ${rows.length}` : ''} 項`);
       for (const row of rows) hide(row.tile, !visible.has(row));
       layouts.push({ grid, shown });
       any ||= !node.hidden;
@@ -619,7 +620,7 @@ class DenseDisplay {
       grid.toggleAttribute('data-wide', widths[index].some(Boolean));
     });
     hide(this.empty, any);
-    text(this.empty, this.onlyIssues ? '目前沒有異常' : '尚未新增段落');
+    text(this.empty, onlyIssues ? '目前沒有異常' : '尚未新增段落');
     this.showDetail(this.open?.tile.hidden ? undefined : this.open);
     if (active?.classList.contains('dense-tile') && active.hidden) this.filter.focus({ preventScroll: true });
   }
@@ -642,17 +643,44 @@ class EnvironmentThresholdCard extends HTMLElement {
     const panel = dom('ha-card', 'standard-card');
     this.panel = panel;
     this.titleNode = dom('h2');
+    this.head = dom('div', 'card-head');
+    const actions = dom('div', 'card-actions');
+    this.filter = dom('button', 'card-toggle', '只看異常');
+    this.density = dom('button', 'card-toggle', '密集模式');
+    this.onlyIssues = false;
+    for (const button of [this.filter, this.density]) {
+      button.type = 'button';
+      button.setAttribute('aria-pressed', 'false');
+    }
+    this.density.onclick = () => {
+      if (!this.isConnected || !this.config) return;
+      this.viewDense = !this.viewDense;
+      this.updateView();
+    };
+    this.filter.onclick = () => {
+      if (!this.isConnected || !this.config) return;
+      this.onlyIssues = !this.onlyIssues;
+      setAttr(this.filter, 'aria-pressed', String(this.onlyIssues));
+      if (this.viewDense) this.dense.updateVisibility(this.onlyIssues);
+      else this.updateStandardVisibility();
+    };
+    actions.append(this.filter, this.density);
+    this.head.append(this.titleNode, actions);
     this.summary = dom('p', 'summary');
     this.summary.setAttribute('role', 'status');
     this.grid = dom('div', 'grid');
+    this.empty = dom('p', 'standard-section-empty', '目前沒有異常');
+    this.empty.hidden = true;
     this.standardSections = new Map();
-    panel.append(this.titleNode, this.summary, this.grid);
-    this.attachShadow({ mode: 'open' }).append(style(CARD_CSS), panel);
+    panel.append(this.head, this.summary, this.grid, this.empty);
+    this.shell = dom('div');
+    this.shell.append(panel);
+    this.attachShadow({ mode: 'open' }).append(style(CARD_CSS), style(DENSE_CSS), this.shell);
   }
 
   connectedCallback() {
-    if (this.dense && !this.dense.shell.hidden) {
-      this.dense.update(this.states, this.darkMode);
+    if (this.viewDense) {
+      this.dense.update(this.states, this.onlyIssues);
       this.dense.observeSummary();
     }
   }
@@ -663,40 +691,61 @@ class EnvironmentThresholdCard extends HTMLElement {
 
   setConfig(config) {
     const items = validate(config);
-    if (denseMode(config)) {
-      if (!this.dense) this.dense = new DenseDisplay(this.shadowRoot);
-      // Legacy labels can contain entity IDs; keep their panel out of the dense DOM.
-      this.panel.remove();
-      if (!this.dense.shell.parentNode) this.shadowRoot.append(this.dense.shell);
-      this.dense.shell.hidden = false;
-      this.dense.updateConfig(config, items, this.states, this.darkMode);
+    const savedDense = denseMode(config);
+    const wasDense = this.viewDense;
+    // Only a new saved default, not a Lovelace config echo, overrides the local view.
+    if (savedDense !== this.savedDense) this.viewDense = savedDense;
+    this.savedDense = savedDense;
+    if (!wasDense || !this.viewDense) this.dense?.reconcileInactiveSelection(this.items, items);
+    this.config = { title: config?.title, sections: config?.sections?.map(({ id, title }) => ({ id, title })) };
+    this.items = items.map(item => ({ ...item }));
+    this.updateView();
+  }
+
+  updateView() {
+    const { config, items, viewDense, onlyIssues } = this;
+    const active = this.shadowRoot.activeElement;
+    this.panel.classList.toggle('dense-card', viewDense);
+    this.panel.classList.toggle('standard-card', !viewDense);
+    this.shell.classList.toggle('dense-shell', viewDense);
+    setAttr(this.density, 'aria-pressed', String(viewDense));
+    if (viewDense) {
+      if (!this.dense) this.dense = new DenseDisplay(this.shadowRoot, this.filter);
+      text(this.titleNode, publicLabel(config.title, DEFAULT_TITLE));
+      // Legacy labels can contain entity IDs; only mount the active body.
+      reconcileChildren(this.panel, [this.head, ...this.dense.nodes]);
+      this.updateTheme();
+      this.dense.updateConfig(config, items, this.states, onlyIssues);
       this.dense.observeSummary();
       return;
     }
-    if (this.dense) {
-      this.dense.shell.hidden = true;
-      this.dense.stopObservingSummary();
-      this.dense.shell.remove();
-    }
-    if (!this.panel.parentNode) this.shadowRoot.append(this.panel);
+    this.dense?.stopObservingSummary();
     if (!sameConfigData(items, this.rows?.map(row => row.item))) {
       this.rows = items.map(item => ({ ...tileNodes(), item: { ...item } }));
     }
     this.updateStandardSections(config?.sections ?? []);
     text(this.titleNode, customTitle(config?.title) || DEFAULT_TITLE);
     this.updateStates();
+    if (active?.classList.contains('dense-tile')) this.density.focus({ preventScroll: true });
   }
 
   set hass(hass) {
     this.states = hass?.states;
     this.darkMode = hass?.themes?.darkMode;
-    if (this.dense && !this.dense.shell.hidden) this.dense.update(this.states, this.darkMode);
-    else this.updateStates();
+    if (this.viewDense) {
+      this.updateTheme();
+      this.dense.update(this.states, this.onlyIssues);
+    } else this.updateStates();
+  }
+
+  updateTheme() {
+    if (typeof this.darkMode === 'boolean') setAttr(this.panel, 'data-theme', this.darkMode ? 'dark' : 'light');
+    else this.panel.removeAttribute('data-theme');
   }
 
   getGridOptions() { return { columns: 12, min_columns: 3 }; }
   getCardSize() {
-    if (this.dense && !this.dense.shell.hidden) return 1 + [...this.dense.sections.values()]
+    if (this.viewDense) return 1 + [...this.dense.sections.values()]
       .reduce((height, section) => height + Math.max(1, Math.ceil(section.rows.length / 4)), 0);
     if (this.standardSections.size) return 1 + [...this.standardSections.values()]
       .reduce((height, section) => height + 1 + (section.grid.childElementCount ? 2 * Math.ceil(section.grid.childElementCount / 2) : 1), 0);
@@ -707,7 +756,7 @@ class EnvironmentThresholdCard extends HTMLElement {
     if (!sections.length) {
       this.standardSections.clear();
       reconcileChildren(this.grid, this.rows.map(row => row.tile));
-      reconcileChildren(this.panel, [this.titleNode, this.summary, this.grid]);
+      reconcileChildren(this.panel, [this.head, this.summary, this.grid, this.empty]);
       return;
     }
     const views = new Map();
@@ -724,13 +773,26 @@ class EnvironmentThresholdCard extends HTMLElement {
       tiles.push(tile);
     }
     this.standardSections = views;
-    reconcileChildren(this.panel, [this.titleNode, this.summary, ...[...views.values()].map(view => view.node)]);
-    for (const { count, grid, empty, tiles } of views.values()) {
-      text(count, `${tiles.length} 項`);
-      hide(grid, !tiles.length);
-      hide(empty, Boolean(tiles.length));
-      reconcileChildren(grid, tiles);
+    reconcileChildren(this.panel, [this.head, this.summary, ...[...views.values()].map(view => view.node), this.empty]);
+    for (const { grid, tiles } of views.values()) reconcileChildren(grid, tiles);
+  }
+
+  updateStandardVisibility() {
+    this.dense?.pruneInactiveSelection(this.states, this.onlyIssues);
+    let any = false;
+    for (const { tile } of this.rows) {
+      const shown = !this.onlyIssues || isAbnormal(tile.dataset.state);
+      hide(tile, !shown);
+      any ||= shown;
     }
+    for (const { node, count, grid, empty, tiles } of this.standardSections.values()) {
+      const shown = tiles.filter(tile => !tile.hidden).length;
+      hide(node, this.onlyIssues && !shown);
+      hide(grid, !shown);
+      hide(empty, Boolean(shown));
+      text(count, `${shown}${this.onlyIssues ? ` / ${tiles.length}` : ''} 項`);
+    }
+    hide(this.empty, !this.onlyIssues || any);
   }
 
   updateStates() {
@@ -756,6 +818,7 @@ class EnvironmentThresholdCard extends HTMLElement {
     const tone = counts.has('high') || counts.has('low') ? 'alarm' : notices.length ? 'warning' : 'normal';
     if (this.summary.dataset.tone !== tone) this.summary.dataset.tone = tone;
     text(this.summary, !this.rows.length ? '請在卡片編輯器新增監測項目。' : notices.join(' · ') || '所有監測皆在範圍內');
+    this.updateStandardVisibility();
   }
 }
 
